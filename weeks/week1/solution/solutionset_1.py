@@ -27,7 +27,7 @@ class TPlan:
             setattr(self, key, value)
 
     def __str__(self):
-        """String representation of the container."""
+        """String representation of the TPlan."""
         items = [f"{key}={value}" for key, value in self.__dict__.items()]
         return f"TPlan({', '.join(items)})"
 
@@ -37,7 +37,7 @@ class TPlan:
 
     @classmethod
     def from_dict(cls, data_dict):
-        """Create a DataContainer instance from a dictionary."""
+        """Create a TPlan instance from a dictionary."""
         return cls(**data_dict)
 
 
