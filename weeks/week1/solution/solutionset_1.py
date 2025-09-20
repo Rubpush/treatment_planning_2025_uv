@@ -96,6 +96,15 @@ def plot_voi_contour(contour_array: np.ndarray, voinames_numbered: Dict[str, int
 
 def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visualization: List[Tuple[str,str]]) :
     """Visualize the tp plan data using matplotlib by showing the ct image data and plotting the contours over it"""
+    if not tp_plan_path or not voinames_colors_visualization:
+        raise ValueError(f"Missing input arguments for tp_plan_path or voinames_colors_visualization")
+
+    # Check if voinames_colors_visualization is a list of two string tuples
+    elif not (isinstance(voinames_colors_visualization, list) and
+            all(isinstance(item, tuple) and len(item) == 2 and
+                all(isinstance(x, str) for x in item) for item in voinames_colors_visualization)):
+        raise ValueError (f"Error: Expected list of tuples with 2 strings each, got: {type(voinames_colors_visualization).__name__}")
+
     # Get TPlan object
     tp_plan_obj = load_tp_plan_data(tp_plan_path)
 
@@ -121,3 +130,8 @@ if __name__ == '__main__':
     visualize_tp_plan_data(
         tp_plan_path=Path(r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat'),
         voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')])
+
+    # Example use:
+    # visualize_tp_plan_data(
+    #     tp_plan_path=Path(r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat'),
+    #     voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')])
