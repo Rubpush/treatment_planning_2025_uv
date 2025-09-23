@@ -246,11 +246,17 @@ def plot_dose_visualization(tp_plan_obj, dose_cutoff: float = 2.0,
         discrete_cmap = ListedColormap(colors)
 
         dose_img = plt.imshow(dose_binned_masked, cmap=discrete_cmap,
-                              alpha=alpha, origin='lower',
-                              vmin=1, vmax=n_intervals)
+                              alpha=0.6, origin='lower',
+                              vmin=0.5, vmax=n_intervals + 0.5)
 
-        # Create custom colorbar with interval labels
-        cbar = plt.colorbar(dose_img, label='Dose (Gy)', ticks=range(1, n_intervals + 1))
+        # Create custom colorbar with centered interval labels
+        cbar = plt.colorbar(dose_img, label='Dose (Gy)')
+
+        # Position ticks at the center of each color band
+        tick_positions = np.arange(1, n_intervals + 1)
+        cbar.set_ticks(tick_positions)
+
+        # Create interval labels
         interval_labels = [f'{dose_bins[i]:.0f}-{dose_bins[i + 1]:.0f}'
                            for i in range(len(dose_bins) - 1)]
         cbar.set_ticklabels(interval_labels)
@@ -329,6 +335,6 @@ if __name__ == '__main__':
                     voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
                     dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
                     viz_mode='intervals',
-                    n_intervals=9,  # Number of discrete dose bands
+                    n_intervals=8,  # Number of discrete dose bands
                     show_plot=True
                     )
