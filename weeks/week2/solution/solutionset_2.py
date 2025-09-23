@@ -14,6 +14,10 @@ from typing import Union, List, Dict, Tuple
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+import matplotlib.cm as cm
+from scipy import ndimage
+
 
 from utils.helpers import mat_loader
 
@@ -177,47 +181,154 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
     else:
         return tp_plan_obj, ct_img
 
-def plot_dose_on_ct(tp_plan_path: Union[Path | str], voinames_colors_visualization: List[Tuple[str,str]],
-                    dose_path:Union[Path | str], show_plot: bool = True) :
-    """Visualize treatment planning data showing CT image with overlaid VOI contours.
+
+def plot_dose_visualization(tp_plan_obj, dose_cutoff: float = 2.0,
+                            viz_mode: str = 'gradient',
+                            dose_levels: List[float] = None,
+                            n_intervals: int = 10,
+                            alpha=0.3):
+    """
+    Plot dose data with three different visualization options.
 
     Args:
-        tp_plan_path (Union[Path, str]): Path to treatment plan data file (.mat format).
-        voinames_colors_visualization (List[Tuple[str, str]]): List of (voi_name, color) tuples.
-            VOI names must match those in the data file. Colors should be valid matplotlib specs.
-        dose_path (Union[Path, str]): Path to dose data file (.mat format).
-        show_plot (bool): argument to show plot or not, if not shown, returns the plot, else returns none
-
-    Returns:
-        None: Displays plot with plt.show().
-
-    Raises:
-        ValueError: If inputs are None/empty or voinames_colors_visualization has wrong format.
-
-    Example:
-        >>> plot_dose_on_ct(Path('ctdata.mat'), [('tumor', 'red'), ('esophagus', 'green')],Path('dosedata.mat'),True)
+        tp_plan_obj: TPlan object containing dose data
+        dose_cutoff: Minimum dose value to display
+        viz_mode: 'gradient', 'isodose', or 'intervals'
+        dose_levels: Custom dose levels for isodose lines (optional)
+        n_intervals: Number of intervals for 'intervals' mode
     """
+
+    # Apply dose cutoff
+    dose_masked = np.ma.masked_where(tp_plan_obj.dosegrid < dose_cutoff, tp_plan_obj.dosegrid)
+
+    if viz_mode == 'gradient':
+        # Option 1: Standard gradient (your current approach)
+        dose_img = plt.imshow(dose_masked, alpha=alpha, cmap='jet', origin='lower')
+        plt.colorbar(dose_img, label='Dose (Gy)')
+
+    elif viz_mode == 'isodose':
+        # Option 2: Smooth isodose lines
+        # Smooth the data for better contours (although 0.5 is low smoothing)
+        dose_smooth = ndimage.gaussian_filter(tp_plan_obj.dosegrid, sigma=0.5)
+
+        max_dose = np.nanmax(tp_plan_obj.dosegrid)
+        # Define dose levels for contours
+        if dose_levels is None:
+            dose_levels = np.linspace(dose_cutoff, max_dose, 10)
+        elif max(dose_levels)<max_dose:
+            dose_levels.append(max_dose)
+
+
+        # Create filled contours for background
+        contourf = plt.contourf(dose_smooth, levels=dose_levels, cmap='jet', alpha=alpha, origin='lower')
+
+        # Add contour lines
+        contours = plt.contour(dose_smooth, levels=dose_levels, colors='black',
+                               linewidths=0.8, alpha=0.7, origin='lower')
+
+        plt.colorbar(contourf, label='Dose (Gy)')
+
+    elif viz_mode == 'intervals':
+        # Option 3: Discrete dose intervals with single colors
+        max_dose = np.nanmax(tp_plan_obj.dosegrid)
+
+        # Create dose intervals
+        dose_bins = np.linspace(dose_cutoff, max_dose, n_intervals + 1)
+
+        # Digitize dose values into intervals
+        dose_binned = np.digitize(tp_plan_obj.dosegrid, dose_bins)
+
+        # Mask low doses
+        dose_binned_masked = np.ma.masked_where(tp_plan_obj.dosegrid < dose_cutoff, dose_binned)
+
+        # Get discrete colors from jet colormap
+        colors = cm.jet(np.linspace(0, 1, n_intervals))
+        discrete_cmap = ListedColormap(colors)
+
+        dose_img = plt.imshow(dose_binned_masked, cmap=discrete_cmap,
+                              alpha=alpha, origin='lower',
+                              vmin=1, vmax=n_intervals)
+
+        # Create custom colorbar with interval labels
+        cbar = plt.colorbar(dose_img, label='Dose (Gy)', ticks=range(1, n_intervals + 1))
+        interval_labels = [f'{dose_bins[i]:.0f}-{dose_bins[i + 1]:.0f}'
+                           for i in range(len(dose_bins) - 1)]
+        cbar.set_ticklabels(interval_labels)
+
+    else:
+        raise ValueError("viz_mode must be 'gradient', 'isodose', or 'intervals'")
+
+
+def plot_dose_on_ct(tp_plan_path: Union[Path, str],
+                    voinames_colors_visualization: List[Tuple[str, str]],
+                    dose_path: Union[Path, str],
+                    dose_cutoff: float = 5.0,
+                    viz_mode: str = 'gradient',
+                    dose_levels: List[float] = None,
+                    n_intervals: int = 10,
+                    show_plot: bool = True):
+    """
+    Enhanced dose visualization with multiple display options.
+
+    Args:
+        tp_plan_path: Path to treatment plan data
+        voinames_colors_visualization: List of (voi_name, color) tuples
+        dose_path: Path to dose data
+        dose_cutoff: Minimum dose to display
+        viz_mode: 'gradient', 'isodose', or 'intervals'
+        dose_levels: Custom dose levels for isodose (optional)
+        n_intervals: Number of discrete intervals for 'intervals' mode
+        show_plot: Whether to display the plot
+    """
+
+    # Load your existing data (assuming these functions exist)
     tp_plan_obj, ct_img = visualize_tp_plan_data(
         tp_plan_path=tp_plan_path,
         voinames_colors_visualization=voinames_colors_visualization,
         show_plot=False)
 
-    # Update tplan with dose data
     tp_plan_obj = load_dose_data(dose_path, tp_plan_obj)
-    plt.imshow(tp_plan_obj.dosegrid,alpha=0.4,cmap='jet', origin='lower')
-    if show_plot:
-        plt.title('TPlan with contours and dose')
 
+    # Apply the selected visualization mode
+    plot_dose_visualization(tp_plan_obj, dose_cutoff, viz_mode, dose_levels, n_intervals)
+
+    if show_plot:
+        title_suffix = {'gradient': 'Gradient', 'isodose': 'Isodose Lines', 'intervals': 'Discrete Intervals'}
+        plt.title(f'TPlan with contours and dose - {title_suffix[viz_mode]}')
         plt.show()
         return None
 
+    return tp_plan_obj
+
 if __name__ == '__main__':
+    # CT with contours visualization
     # visualize_tp_plan_data(
     #     tp_plan_path=Path(r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat'),
     #     voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')],
     #     show_plot=True)
 
+    # Mode 1: Dose visualization - Gradient
     plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
-                    voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')],
+                    voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
                     dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
-                    show_plot=True,)
+                    viz_mode='gradient',
+                    show_plot=True
+    )
+
+    # Mode 2: Dose visualization - Isodose lines
+    plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
+                    voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
+                    dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
+                    viz_mode='isodose',
+                    dose_levels=[5, 10, 20, 30, 40, 50, 60, 70],  # Custom dose levels in Gy
+                    show_plot=True
+    )
+
+    # Mode 3: Dose visualization - Discrete intervals
+    plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
+                    voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
+                    dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
+                    viz_mode='intervals',
+                    n_intervals=9,  # Number of discrete dose bands
+                    show_plot=True
+                    )
