@@ -18,11 +18,21 @@ import matplotlib.pyplot as plt
 from utils.helpers import mat_loader
 
 class TPlan:
+    filepath: str = None
     ct : np.ndarray = None
+    dosegrid : np.ndarray = None
     voi : np.ndarray = None
     voinames : np.ndarray = None
     voxelsize : float = None
-    filepath : str = None
+    """
+    Treatment plan container that supports both predefined and dynamic attributes.
+
+    Predefined attributes:
+        filepath, ct, dosegrid, voi, voinames, voxelsize
+
+    Additional attributes can be added dynamically via the constructor or from_dict().
+    """
+
 
     def __init__(self, **kwargs):
         """Initialize the container with keyword arguments."""
@@ -63,6 +73,21 @@ def load_tp_plan_data(tp_plan_path: Union[Path | str]) -> TPlan:
 
         return tp_plan_obj
 
+def load_dose_data(dose_path: Union[Path | str], tplan:TPlan) -> TPlan:
+    """Loads data with the mat_loader and stores the data in a returned TPlan object"""
+    if not Path(dose_path).exists():
+        print(f'Filepath to load dose data from does not exist: {dose_path}')
+        raise Exception
+    else:
+        print(f"Loading dose data from path :{dose_path}")
+        dose_path_dict = mat_loader.loadmat(str(dose_path))
+        print(f"Succes! Dictionary contents: {dose_path}")
+
+        # add dose to TPlan object
+        tplan.__setattr__('dosegrid',dose_path_dict['dose'])
+
+        return tplan
+
 def get_voinames_number(all_voinames: List|np.ndarray)-> Dict[str,int]:
     """Create a mapping of voi names to sequential numbers starting from 1."""
     if len(all_voinames) == 0 or not all(isinstance(item, str) for item in all_voinames):
@@ -97,13 +122,15 @@ def plot_voi_contour(contour_array: np.ndarray, voinames_numbered: Dict[str, int
     return voi_mask
 
 
-def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visualization: List[Tuple[str,str]]) :
+def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visualization: List[Tuple[str,str]],
+                           show_plot:bool =True):
     """Visualize treatment planning data showing CT image with overlaid VOI contours.
 
     Args:
         tp_plan_path (Union[Path, str]): Path to treatment plan data file (.mat format).
         voinames_colors_visualization (List[Tuple[str, str]]): List of (voi_name, color) tuples.
             VOI names must match those in the data file. Colors should be valid matplotlib specs.
+        show_plot (bool): argument to show plot or not, if not shown, returns the plot, else returns none
 
     Returns:
         None: Displays plot with plt.show().
@@ -112,7 +139,7 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
         ValueError: If inputs are None/empty or voinames_colors_visualization has wrong format.
 
     Example:
-        >>> visualize_tp_plan_data(Path('data.mat'), [('tumor', 'red'), ('esophagus', 'green')])
+        >>> visualize_tp_plan_data(Path('data.mat'), [('tumor', 'red'), ('esophagus', 'green')],True)
     """
     if not tp_plan_path or not voinames_colors_visualization:
         raise ValueError(f"Missing input arguments for tp_plan_path or voinames_colors_visualization")
@@ -130,7 +157,7 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
     voinames_numbered_dict = get_voinames_number(tp_plan_obj.voinames)
 
     # Plot the ct imaging data
-    plt.imshow(tp_plan_obj.ct,  cmap='grey')
+    ct_img = plt.imshow(tp_plan_obj.ct,  cmap='grey', origin='lower')
 
     # Plot the contour data
     voi_masks = {}
@@ -138,18 +165,59 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
         voi_mask = plot_voi_contour(tp_plan_obj.voi,voinames_numbered_dict,voiname,color)
         voi_masks[f'{voiname}'] = voi_mask
 
-    plt.title('TPlan with contours')
 
     #Add legend
     plt.legend(fontsize=8)
-    plt.show()
+
+    if show_plot:
+        plt.title('TPlan with contours')
+
+        plt.show()
+        return None
+    else:
+        return tp_plan_obj, ct_img
+
+def plot_dose_on_ct(tp_plan_path: Union[Path | str], voinames_colors_visualization: List[Tuple[str,str]],
+                    dose_path:Union[Path | str], show_plot: bool = True) :
+    """Visualize treatment planning data showing CT image with overlaid VOI contours.
+
+    Args:
+        tp_plan_path (Union[Path, str]): Path to treatment plan data file (.mat format).
+        voinames_colors_visualization (List[Tuple[str, str]]): List of (voi_name, color) tuples.
+            VOI names must match those in the data file. Colors should be valid matplotlib specs.
+        dose_path (Union[Path, str]): Path to dose data file (.mat format).
+        show_plot (bool): argument to show plot or not, if not shown, returns the plot, else returns none
+
+    Returns:
+        None: Displays plot with plt.show().
+
+    Raises:
+        ValueError: If inputs are None/empty or voinames_colors_visualization has wrong format.
+
+    Example:
+        >>> plot_dose_on_ct(Path('ctdata.mat'), [('tumor', 'red'), ('esophagus', 'green')],Path('dosedata.mat'),True)
+    """
+    tp_plan_obj, ct_img = visualize_tp_plan_data(
+        tp_plan_path=tp_plan_path,
+        voinames_colors_visualization=voinames_colors_visualization,
+        show_plot=False)
+
+    # Update tplan with dose data
+    tp_plan_obj = load_dose_data(dose_path, tp_plan_obj)
+    plt.imshow(tp_plan_obj.dosegrid,alpha=0.4,cmap='jet', origin='lower')
+    if show_plot:
+        plt.title('TPlan with contours and dose')
+
+        plt.show()
+        return None
 
 if __name__ == '__main__':
-    visualize_tp_plan_data(
-        tp_plan_path=Path(r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat'),
-        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')])
-
-    # Example use:
     # visualize_tp_plan_data(
     #     tp_plan_path=Path(r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat'),
-    #     voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')])
+    #     voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')],
+    #     show_plot=True)
+
+    plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
+                    voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')],
+                    dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
+                    show_plot=True,)
