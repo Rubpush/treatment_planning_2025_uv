@@ -57,6 +57,9 @@ class TPlan:
         """Create a TPlan instance from a dictionary."""
         return cls(**data_dict)
 
+def project_root_provider()->Path:
+    """Provides the root path of the project"""
+    return Path(__file__).parent.parent.parent.parent
 
 def load_tp_plan_data(tp_plan_path: Union[Path | str]) -> TPlan:
     """Loads data with the mat_loader and stores the data in a returned TPlan object"""
@@ -87,7 +90,7 @@ def load_dose_data(dose_path: Union[Path | str], tplan:TPlan) -> TPlan:
         dose_path_dict = mat_loader.loadmat(str(dose_path))
         print(f"Succes! Dictionary contents: {dose_path}")
 
-        # add dose to TPlan object
+        # add dose data to TPlan object
         tplan.__setattr__('dosegrid',dose_path_dict['dose'])
 
         return tplan
@@ -143,7 +146,7 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
         ValueError: If inputs are None/empty or voinames_colors_visualization has wrong format.
 
     Example:
-        >>> visualize_tp_plan_data(Path('data.mat'), [('tumor', 'red'), ('esophagus', 'green')],True)
+        visualize_tp_plan_data(Path('data.mat'), [('tumor', 'red'), ('esophagus', 'green')],True)
     """
     if not tp_plan_path or not voinames_colors_visualization:
         raise ValueError(f"Missing input arguments for tp_plan_path or voinames_colors_visualization")
@@ -168,7 +171,6 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
     for voiname, color in voinames_colors_visualization:
         voi_mask = plot_voi_contour(tp_plan_obj.voi,voinames_numbered_dict,voiname,color)
         voi_masks[f'{voiname}'] = voi_mask
-
 
     #Add legend
     plt.legend(fontsize=8)
@@ -198,68 +200,82 @@ def plot_dose_visualization(tp_plan_obj, dose_cutoff: float = 2.0,
         n_intervals: Number of intervals for 'intervals' mode
     """
 
+    if viz_mode not in ['gradient', 'isodose', 'intervals']:
+        raise ValueError("viz_mode must be 'gradient', 'isodose', or 'intervals'")
+
     # Apply dose cutoff
     dose_masked = np.ma.masked_where(tp_plan_obj.dosegrid < dose_cutoff, tp_plan_obj.dosegrid)
 
     if viz_mode == 'gradient':
-        # Option 1: Standard gradient (your current approach)
+        # Standard gradient dose display
         dose_img = plt.imshow(dose_masked, alpha=alpha, cmap='jet', origin='lower')
         plt.colorbar(dose_img, label='Dose (Gy)')
 
     elif viz_mode == 'isodose':
-        # Option 2: Smooth isodose lines
-        # Smooth the data for better contours (although 0.5 is low smoothing)
-        dose_smooth = ndimage.gaussian_filter(tp_plan_obj.dosegrid, sigma=0.5)
+        # Smooth isodose lines display
+        def visualize_isodose_contours(tp_plan_obj, dose_cutoff, dose_levels, sigma=0.5, alpha=0.7, linewidth=0.8,dose_levels_step=10):
+            """ Visualize isodose contours on the dose grid."""
 
-        max_dose = np.nanmax(tp_plan_obj.dosegrid)
-        # Define dose levels for contours
-        if dose_levels is None:
-            dose_levels = np.linspace(dose_cutoff, max_dose, 10)
-        elif max(dose_levels)<max_dose:
-            dose_levels.append(max_dose)
+            # Smooth the data by taking a weighted average of a region for better contours (although 0.5 is low smoothing)
+            dose_smooth = ndimage.gaussian_filter(tp_plan_obj.dosegrid, sigma=sigma)
 
+            # Find the highest dose value in the dose grid for color bar and scaling
+            max_dose = np.nanmax(tp_plan_obj.dosegrid)
 
-        # Create filled contours for background
-        contourf = plt.contourf(dose_smooth, levels=dose_levels, cmap='jet', alpha=alpha, origin='lower')
+            # Define dose levels for contours
+            if dose_levels is None:
+                dose_levels = np.linspace(dose_cutoff, max_dose, dose_levels_step)
+            elif max(dose_levels)<max_dose:
+                dose_levels.append(max_dose)
 
-        # Add contour lines
-        contours = plt.contour(dose_smooth, levels=dose_levels, colors='black',
-                               linewidths=0.8, alpha=0.7, origin='lower')
+            # Create filled contours for background
+            contourf = plt.contourf(dose_smooth, levels=dose_levels, cmap='jet', alpha=alpha, origin='lower')
 
-        plt.colorbar(contourf, label='Dose (Gy)')
+            # Add contour lines
+            contours = plt.contour(dose_smooth, levels=dose_levels, colors='black',
+                                   linewidths=linewidth, alpha=alpha, origin='lower')
+
+            plt.colorbar(contourf, label='Dose (Gy)')
+
+        visualize_isodose_contours(tp_plan_obj, dose_cutoff, dose_levels, sigma=0.5, alpha=0.7, linewidth=0.8)
 
     elif viz_mode == 'intervals':
-        # Option 3: Discrete dose intervals with single colors
-        max_dose = np.nanmax(tp_plan_obj.dosegrid)
+        def visualize_dose_intervals(tp_plan_obj, dose_cutoff, n_intervals):
+            """ Visualize dose with discrete dose intervals."""
+            # Discrete dose intervals with single colors
+            max_dose = np.nanmax(tp_plan_obj.dosegrid)
 
-        # Create dose intervals
-        dose_bins = np.linspace(dose_cutoff, max_dose, n_intervals + 1)
+            # Create dose intervals from cutoff to max dose with given intervals
+            dose_bins = np.linspace(dose_cutoff, max_dose, n_intervals + 1)
 
-        # Digitize dose values into intervals
-        dose_binned = np.digitize(tp_plan_obj.dosegrid, dose_bins)
+            # Digitize/bin dose values into intervals
+            dose_binned = np.digitize(tp_plan_obj.dosegrid, dose_bins)
 
-        # Mask low doses
-        dose_binned_masked = np.ma.masked_where(tp_plan_obj.dosegrid < dose_cutoff, dose_binned)
+            # Mask/remove values below chosen cutoff
+            dose_binned_masked = np.ma.masked_where(tp_plan_obj.dosegrid < dose_cutoff, dose_binned)
 
-        # Get discrete colors from jet colormap
-        colors = cm.jet(np.linspace(0, 1, n_intervals))
-        discrete_cmap = ListedColormap(colors)
+            # Get discrete colors from jet colormap
+            colors = cm.jet(np.linspace(0, 1, n_intervals))
+            discrete_cmap = ListedColormap(colors)
 
-        dose_img = plt.imshow(dose_binned_masked, cmap=discrete_cmap,
-                              alpha=0.6, origin='lower',
-                              vmin=0.5, vmax=n_intervals + 0.5)
+            # Plot the binned dose data with discrete colormap
+            dose_img = plt.imshow(dose_binned_masked, cmap=discrete_cmap,
+                                  alpha=0.6, origin='lower',
+                                  vmin=0.5, vmax=n_intervals + 0.5)
 
-        # Create custom colorbar with centered interval labels
-        cbar = plt.colorbar(dose_img, label='Dose (Gy)')
+            # Create custom colorbar with centered interval labels
+            cbar = plt.colorbar(dose_img, label='Dose (Gy)')
 
-        # Position ticks at the center of each color band
-        tick_positions = np.arange(1, n_intervals + 1)
-        cbar.set_ticks(tick_positions)
+            # Position ticks at the center of each color band
+            tick_positions = np.arange(1, n_intervals + 1)
+            cbar.set_ticks(tick_positions)
 
-        # Create interval labels
-        interval_labels = [f'{dose_bins[i]:.0f}-{dose_bins[i + 1]:.0f}'
-                           for i in range(len(dose_bins) - 1)]
-        cbar.set_ticklabels(interval_labels)
+            # Create interval labels
+            interval_labels = [f'{dose_bins[i]:.0f}-{dose_bins[i + 1]:.0f}'
+                               for i in range(len(dose_bins) - 1)]
+            cbar.set_ticklabels(interval_labels)
+
+        visualize_dose_intervals(tp_plan_obj, dose_cutoff, n_intervals)
 
     else:
         raise ValueError("viz_mode must be 'gradient', 'isodose', or 'intervals'")
@@ -314,27 +330,30 @@ if __name__ == '__main__':
     #     show_plot=True)
 
     # Mode 1: Dose visualization - Gradient
-    plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
+    plot_dose_on_ct(tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
                     voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
-                    dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
+                    dose_path=str(project_root_provider()) + r'.\utils\data\exampledose.mat',
                     viz_mode='gradient',
+                    dose_cutoff=5.0,
                     show_plot=True
     )
 
     # Mode 2: Dose visualization - Isodose lines
-    plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
+    plot_dose_on_ct(tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
                     voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
-                    dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
+                    dose_path=str(project_root_provider()) + r'.\utils\data\exampledose.mat',
                     viz_mode='isodose',
+                    dose_cutoff=5.0,
                     dose_levels=[5, 10, 20, 30, 40, 50, 60, 70],  # Custom dose levels in Gy
                     show_plot=True
     )
 
     # Mode 3: Dose visualization - Discrete intervals
-    plot_dose_on_ct(tp_plan_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\patientdata.mat',
+    plot_dose_on_ct(tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
                     voinames_colors_visualization=[('tumor', 'purple'),('esophagus','brown'),('spinal cord','magenta')],
-                    dose_path=r'H:\_KlinFysica\_RT\phys_med_RT_planning\treatment_planning_2025_uv\utils\data\exampledose.mat',
+                    dose_path=str(project_root_provider()) + r'.\utils\data\exampledose.mat',
                     viz_mode='intervals',
+                    dose_cutoff=5.0,
                     n_intervals=8,  # Number of discrete dose bands
                     show_plot=True
                     )
