@@ -10,7 +10,7 @@ To perform this, run visualize_tp_plan_data with input arguments
 tp_plan_path and voinames_colors_visualization which are also indicated in the example and if __name__ == '__main__':
 part at the end of this script. """
 
-from typing import Union, List, Dict, Tuple
+from typing import Union, List, Dict, Tuple, Any
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -57,43 +57,95 @@ class TPlan:
         """Create a TPlan instance from a dictionary."""
         return cls(**data_dict)
 
+class TBeamletdose:
+    filepath: str = None
+    dose: np.ndarray = None
+    x: np.ndarray = None
+    z: np.ndarray = None
+    beamletsize: np.ndarray = None
+    centralaxis_x: float = None
+    """
+    Treatment beam container that supports both predefined and dynamic attributes.
+
+    Predefined attributes:
+        filepath, dose, voxelsize, x, z, beamletsize, centralaxis_x
+
+    Additional attributes can be added dynamically via the constructor or from_dict().
+    """
+
+    def __init__(self, **kwargs):
+        """Initialize the container with keyword arguments."""
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __str__(self):
+        """String representation of the TPlan."""
+        items = [f"{key}={value}" for key, value in self.__dict__.items()]
+        return f"TPlan({', '.join(items)})"
+
+    def __repr__(self):
+        """Developer-friendly representation."""
+        return self.__str__()
+
+    @classmethod
+    def from_dict(cls, data_dict):
+        """Create a TPlan instance from a dictionary."""
+        return cls(**data_dict)
+
 def project_root_provider()->Path:
     """Provides the root path of the project"""
     return Path(__file__).parent.parent.parent.parent
 
+
+def _load_mat_file(file_path: Path | str, data_type: str) -> dict:
+    """Helper function to load and validate mat files"""
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Filepath to load {data_type} data does not exist: {path}")
+
+    print(f"Loading {data_type} data from path: {path}")
+    data_dict = mat_loader.loadmat(str(path))
+    print(f"Success! Dictionary contents: {data_dict}")
+    return data_dict
+
+
 def load_tp_plan_data(tp_plan_path: Union[Path | str]) -> TPlan:
     """Loads data with the mat_loader and stores the data in a returned TPlan object"""
-    if not Path(tp_plan_path).exists():
-        print(f'Filepath to load tp plan data from does not exist: {tp_plan_path}')
-        raise Exception
-    else:
-        print(f"Loading tp plan data from path :{tp_plan_path}")
-        tp_plan_dict = mat_loader.loadmat(str(tp_plan_path))
-        print(f"Succes! Dictionary contents: {tp_plan_dict}")
+    # Get tp_plan_dict
+    tp_plan_dict = _load_mat_file(tp_plan_path, "tp plan")
 
-        # add filepath to the dictionary
-        tp_plan_dict['TPlan']['filepath'] = tp_plan_path
+    # add filepath to the dictionary
+    tp_plan_dict['TPlan']['filepath'] = tp_plan_path
 
-        # load dictonary into TPlan object/data_model
-        tp_plan_obj = TPlan.from_dict(tp_plan_dict['TPlan'])
-        print(f"Loaded the dictionary data into a TPlan object: {tp_plan_obj}")
+    # load dictonary into TPlan object/data_model
+    tp_plan_obj = TPlan.from_dict(tp_plan_dict['TPlan'])
+    print(f"Loaded the dictionary data into a TPlan object: {tp_plan_obj}")
 
-        return tp_plan_obj
+    return tp_plan_obj
 
 def load_dose_data(dose_path: Union[Path | str], tplan:TPlan) -> TPlan:
     """Loads data with the mat_loader and stores the data in a returned TPlan object"""
-    if not Path(dose_path).exists():
-        print(f'Filepath to load dose data from does not exist: {dose_path}')
-        raise Exception
-    else:
-        print(f"Loading dose data from path :{dose_path}")
-        dose_path_dict = mat_loader.loadmat(str(dose_path))
-        print(f"Succes! Dictionary contents: {dose_path}")
+    # Get dose_grid_dict
+    dose_grid_dict = _load_mat_file(dose_path, "dose")
 
-        # add dose data to TPlan object
-        tplan.__setattr__('dosegrid',dose_path_dict['dose'])
+    # add dose data to TPlan object
+    tplan.__setattr__('dosegrid',dose_grid_dict['dose'])
 
-        return tplan
+    return tplan
+
+def load_beamletdose_data(beamletdose_path: Union[Path | str]) -> TBeamletdose:
+    """Loads data with the mat_loader and stores the data in a returned TPlan object"""
+    # get beamletdose dict
+    beamletdose_dict = _load_mat_file(beamletdose_path, "beamletdose")
+
+    # add filepath to the dictionary
+    beamletdose_dict['TBeamletdose']['filepath'] = beamletdose_path
+
+    # load dictonary into TPlan object/data_model
+    beamletdose_obj = TBeamletdose.from_dict(beamletdose_dict['TBeamletdose'])
+    print(f"Loaded the dictionary data into a Tbeamletdose object: {beamletdose_obj}")
+
+    return beamletdose_obj
 
 def get_voinames_number(all_voinames: List|np.ndarray)-> Dict[str,int]:
     """Create a mapping of voi names to sequential numbers starting from 1."""
@@ -218,7 +270,7 @@ def plot_dose_visualization(tp_plan_obj, dose_cutoff: float = 2.0,
         def visualize_isodose_contours(tp_plan_obj, dose_cutoff, dose_levels, sigma=0.5, alpha=0.7, linewidth=0.8,dose_levels_step=10):
             """ Visualize isodose contours on the dose grid."""
 
-            # Smooth the data by taking a weighted average of a region for better contours (although 0.5 is low smoothing)
+            # Smooth the data by taking a weighted average of a region for better contours (although default 0.5 is low smoothing)
             dose_smooth = ndimage.gaussian_filter(tp_plan_obj.dosegrid, sigma=sigma)
 
             # Find the highest dose value in the dose grid for color bar and scaling
@@ -403,13 +455,12 @@ def get_relative_attenuation_coeff(ct_scan:np.ndarray) ->np.ndarray:
     return atten_coeff_matrix
 
 
-def get_raddepth_from_atten_coeffs(atten_coeff_matrix:np.ndarray, isocenter:Dict[str,float], angle:Union[int,float], step_size=0.3, pixel_spacing=1)->np.ndarray:
+def get_raddepth_from_atten_coeffs(atten_coeff_matrix:np.ndarray, isocenter:Dict[str,float], angle:Union[int,float], step_size=0.3, pixel_size:float=1)->np.ndarray:
     """Generate a radiological depth matrix from an attenuation coefficient matrix,
      an isocenter and an angle (from the y axis, clockwise)"""
     # List to track the first cast ray path (debugging)
     first_ray_path_x = []
     first_ray_path_y = []
-
 
     # Calculate ray direction vector from angle with trigonometric rotation formula (rays point toward isocenter)
     # formula for angle measured clockwise from +y-axis => dx = -sin(θ), dy = -cos(θ)
@@ -429,9 +480,12 @@ def get_raddepth_from_atten_coeffs(atten_coeff_matrix:np.ndarray, isocenter:Dict
     isocenter_x = isocenter['x']
     isocenter_y = isocenter['y']
 
-    # Check if ray direction points toward isocenter from rim
-    # For this we use the dot product test (formula)
+    # Check if ray direction points toward isocenter (or image center) from rim
+    # For this we use the dot product test (v₁ · v₂ = v₁ₓ × v₂ₓ + v₁ᵧ × v₂ᵧ),
+    # where v₁ = vector from rim to isocenter, and v₂ = ray direction
+    # if positive, the x and or y components point in same direction,
     pointing_inward = ((isocenter_x - rim_x) * dx + (isocenter_y - rim_y) * dy) > 0
+    # pointing_outward = ((isocenter_x - rim_x) * dx + (isocenter_y - rim_y) * dy) < 0
 
     # Get starting points where rays enter the image
     valid_starts_y = rim_coords[0][pointing_inward]
@@ -444,7 +498,7 @@ def get_raddepth_from_atten_coeffs(atten_coeff_matrix:np.ndarray, isocenter:Dict
     visited = np.zeros_like(atten_coeff_matrix, dtype=bool)
 
     # Define a distance travelled per step, this might be relevant when pixel/voxel size is non-isotropic
-    distance_per_step = pixel_spacing * step_size
+    distance_per_step = pixel_size * step_size
 
     # Add the start x and y to the first ray debugging path
     first_ray_path_x.append(valid_starts_x[0])
@@ -485,7 +539,7 @@ def get_raddepth_from_atten_coeffs(atten_coeff_matrix:np.ndarray, isocenter:Dict
     return raddepth_matrix
 
 
-def calculate_raddepth(angle: Union[int|float], ct_scan:np.ndarray, isocenter:Dict[str,float]) -> np.ndarray:
+def calculate_raddepth(angle: Union[int|float], ct_scan:np.ndarray, isocenter:Dict[str,float],pixel_size:float, step_size:float=0.5) -> np.ndarray:
     """Calculate the radiological depth from ct scan Hounsfield units for a given angle
     from the y-axis (clockwise) for a given isocentre as rotation point."""
 
@@ -494,12 +548,13 @@ def calculate_raddepth(angle: Union[int|float], ct_scan:np.ndarray, isocenter:Di
 
     # Perform raytracing for angle and isocenter on relative_attenuation_coefficient_matrix
     raddepth_matrix = get_raddepth_from_atten_coeffs(atten_coeff_matrix=atten_coeff_matrix,
-                                                     isocenter=isocenter, angle=angle)
+                                                     isocenter=isocenter, step_size=step_size,pixel_size=pixel_size,
+                                                     angle=angle)
 
     return raddepth_matrix
 
 
-def raddepth_on_ct(tp_plan_path:Path, angle:Union[float|int], isocenter_method='COM_tumor', show_outside_body=False,
+def raddepth_on_ct(tp_plan_path:Path, angle:Union[float|int], isocenter_method='COM_tumor', step_size=0.5, show_outside_body=False,
                    show_image:bool = True, show_isocenter:bool = False,
                    show_contours:bool = False, voinames_colors_visualization:Tuple[str,str] = None):
     """Plot the radiological depth of a ct scan on top of a ct scan as a colormap"""
@@ -513,7 +568,8 @@ def raddepth_on_ct(tp_plan_path:Path, angle:Union[float|int], isocenter_method='
     isocenter_xy = get_isocenter(tp_plan_obj=tp_plan_obj,isocenter_method=isocenter_method)
 
     # Calculate the raddepth for a given angle on the CT. Pass isocenter, for calculation optimizations
-    raddepth_matrix = calculate_raddepth(angle=angle,ct_scan=tp_plan_obj.ct,isocenter=isocenter_xy)
+    print(f"Input step_size ratio {step_size}, on the voxel grid {tp_plan_obj.voxelsize} mm relates to step_size {tp_plan_obj.voxelsize*step_size} mm")
+    raddepth_matrix = calculate_raddepth(angle=angle,ct_scan=tp_plan_obj.ct,isocenter=isocenter_xy,pixel_size=tp_plan_obj.voxelsize, step_size=step_size)
 
     # Keep raddepth data outside body or remove outside body data by setting to 0
     if not show_outside_body:
@@ -578,13 +634,15 @@ if __name__ == '__main__':
     tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         angle=100,
         isocenter_method='com_tumor',
-        show_outside_body=True
+        step_size=0.2,
+        show_outside_body=False
     )
 
     raddepth_on_ct(
     tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         angle=200,
         isocenter_method='com_tumor',
+        step_size=0.2,
         show_outside_body=False
     )
 
@@ -592,5 +650,8 @@ if __name__ == '__main__':
     tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         angle=300,
         isocenter_method='com_tumor',
+        step_size=0.2,
         show_outside_body=False
     )
+
+    # #=====================================Week4===============================
