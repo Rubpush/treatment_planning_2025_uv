@@ -571,7 +571,7 @@ def calculate_raddepth(angle: Union[int|float], ct_scan:np.ndarray, isocenter:Di
     return raddepth_matrix
 
 
-def raddepth_on_ct(tp_plan_path:Path, angle:Union[float|int], isocenter_method='COM_tumor', step_size=0.5, show_outside_body=False,
+def raddepth_on_ct(tp_plan_path:Path, angle:Union[float|int], isocenter_method='COM_tumor', step_size=0.2, show_outside_body=False,
                    show_image:bool = True, show_isocenter:bool = False,
                    show_contours:bool = False, voinames_colors_visualization:Tuple[str,str] = None):
     """Plot the radiological depth of a ct scan on top of a ct scan as a colormap"""
@@ -641,7 +641,7 @@ def interpolate_to_grid(from_img_data: np.ndarray,from_voxelsize:float = 0.5, to
     """interpolate input image from voxelsize to voxelsize."""
     # Get image shapes, also in seperate y and x variables
     from_img_shape, to_img_shape = np.shape(from_img_data), np.shape(to_img_data)
-    print(f'interpolating image data with shape: {from_img_shape} to shape {to_img_shape}')
+    print(f'interpolating image data with shape: {from_img_shape} and voxelsize {from_voxelsize} to voxelsize {to_voxelsize}')
     # y_from_img_shape, x_from_img_shape = from_img_shape
     # y_to_img_shape, x_to_img_shape = to_img_shape
 
@@ -656,109 +656,102 @@ def interpolate_to_grid(from_img_data: np.ndarray,from_voxelsize:float = 0.5, to
     return data_interpolated
 
 
-def rotate_and_align_beam(imageA, imageB, angle, isocenter, latpos=0, longpos=0):
+def rotate_and_align_beam(beam_img, ref_img, angle, isocenter, latpos=0, longpos=0):
     """
-    Rotate imageA around its center and align the beam start voxel to edge,
+    Rotate beam_img around its center and align the beam start voxel to edge,
     ensuring the beam passes through (isocenter + latpos/longpos).
 
+    Algorithm overview:
+    1. Find the beam start point (highest intensity) in the original beam image
+    2. Rotate the beam image by the specified angle
+    3. Track where the beam start moved after rotation
+    4. Calculate which edge the beam should enter from
+    5. Position the rotated beam so it enters at the edge and passes through target
+
     Parameters:
-    - imageA: Input 2D or 3D image with beam (high-intensity start)
-    - imageB: Reference image or shape
+    - beam_img: Input 2D or 3D image with beam (high-intensity start)
+    - ref_img: Reference image or shape
     - angle: Rotation angle in degrees (clockwise)
-    - isocenter: {'y': int, 'x': int} target coordinates in imageB
+    - isocenter: {'y': int, 'x': int} target coordinates in ref_img
     - latpos: lateral shift (x-axis)
     - longpos: longitudinal shift (y-axis)
     """
+    print('Rotating beam and aligning to reference image')
 
-    # Ensure 2D image for coordinate calculations
-    if imageA.ndim == 3:
-        gray = np.max(imageA, axis=2)
-    else:
-        gray = imageA
+    # Beam starts from x=0 and moves along positive x-axis
+    beam_start_x = 0
 
-    # Find beam start: coordinates of max intensity voxel
-    max_pos = np.unravel_index(np.argmax(gray), gray.shape)
-    beam_start_y, beam_start_x = max_pos
-
-    # Image center coords
-    h, w = gray.shape
+    # beam image center coords
+    h, w = beam_img.shape
     center_y, center_x = h / 2, w / 2
 
     # Offset from center to beam start
-    offset_y = beam_start_y - center_y
+    offset_y = 0
     offset_x = beam_start_x - center_x
 
-    # Rotate imageA around its center
-    rotated = ndimage.rotate(imageA, angle, reshape=True, order=1, mode='constant', cval=0)
+    # Rotate beam_img around its center
+    rotated = ndimage.rotate(beam_img, angle, reshape=True, order=1, mode='constant', cval=0)
 
     rot_h, rot_w = rotated.shape[:2]
     rot_center_y, rot_center_x = rot_h / 2, rot_w / 2
 
-    # Rotate the offset vector by -angle
+    # Transform offset vector to track beam start position in rotated image.
+    # Image rotates by +angle, but output coordinates stay axis-aligned,
+    # so we apply inverse rotation (-angle) to find new beam start position.
     theta = np.deg2rad(angle)
     cos_theta, sin_theta = np.cos(theta), np.sin(theta)
 
     rot_offset_x = cos_theta * offset_x + sin_theta * offset_y
     rot_offset_y = -sin_theta * offset_x + cos_theta * offset_y
 
+    # Beam direction from angle (positive angle is clockwise)
+    beam_angle_rad = np.deg2rad(angle)
+    # When plotted with origin lower, dx and dy align with increasing x and y axis.
+    # Minus x is towards left, minus y is towards bottom
+    dx = np.cos(beam_angle_rad)  # x-component
+    dy = -np.sin(beam_angle_rad)  # y-component
+
     # Target point that beam should pass through
-    grid_shape = imageB.shape[:2]
+    grid_shape = ref_img.shape[:2]
     target_y = isocenter['y'] + longpos
     target_x = isocenter['x'] + latpos
 
-    # Beam direction from angle (note: positive angle is clockwise)
-    beam_angle_rad = np.deg2rad(angle)
-    dx = np.cos(beam_angle_rad)  # x-component
-    dy = -np.sin(beam_angle_rad)  # y-component (negative for screen coords)
-
-    # Determine which edge based on beam direction
-    # Choose edge that beam points away from
+    # Find which edge the beam enters from and calculate exact entry coordinates
+    # Using parametric line equation: point = start + t * direction
+    # We solve for the edge point where the line through target intersects the edge
     if abs(dx) > abs(dy):
-        # Beam mostly horizontal
+        # Beam is mostly horizontal
         if dx > 0:
-            # Beam points right, start from left edge (x=0)
+            # Beam travels rightward → enters from left edge (x=0)
             edge_x = 0
-            # Calculate y position: beam from (edge_y, 0) must pass through (target_y, target_x)
-            # Parametric: (edge_y, 0) + t*(dy, dx) = (target_y, target_x)
-            # From x: 0 + t*dx = target_x → t = target_x/dx
-            # From y: edge_y + t*dy = target_y → edge_y = target_y - (target_x/dx)*dy
-            if abs(dx) > 1e-10:
-                edge_y = target_y - (target_x / dx) * dy
-            else:
-                edge_y = target_y
+            # Solve for y: edge_point + t*(dy,dx) = target
+            # From x-component: 0 + t*dx = target_x → t = target_x/dx
+            # Substitute into y-component: edge_y + t*dy = target_y
+            edge_y = target_y - (target_x / dx) * dy if abs(dx) > 1e-10 else target_y
         else:
-            # Beam points left, start from right edge (x=grid_shape[1]-1)
+            # Beam travels leftward → enters from right edge
             edge_x = grid_shape[1] - 1
-            # From x: edge_x + t*dx = target_x → t = (target_x - edge_x)/dx
-            # From y: edge_y + t*dy = target_y
-            if abs(dx) > 1e-10:
-                edge_y = target_y - ((target_x - edge_x) / dx) * dy
-            else:
-                edge_y = target_y
+            edge_y = target_y - ((target_x - edge_x) / dx) * dy if abs(dx) > 1e-10 else target_y
     else:
-        # Beam mostly vertical
+        # Beam is mostly vertical
         if dy > 0:
-            # Beam points down, start from top edge (y=0)
+            # Beam travels downward → enters from top edge (y=0)
             edge_y = 0
-            # From y: 0 + t*dy = target_y → t = target_y/dy
-            # From x: edge_x + t*dx = target_x
-            if abs(dy) > 1e-10:
-                edge_x = target_x - (target_y / dy) * dx
-            else:
-                edge_x = target_x
+            edge_x = target_x - (target_y / dy) * dx if abs(dy) > 1e-10 else target_x
         else:
-            # Beam points up, start from bottom edge (y=grid_shape[0]-1)
+            # Beam travels upward → enters from bottom edge
             edge_y = grid_shape[0] - 1
-            # From y: edge_y + t*dy = target_y → t = (target_y - edge_y)/dy
-            # From x: edge_x + t*dx = target_x
-            if abs(dy) > 1e-10:
-                edge_x = target_x - ((target_y - edge_y) / dy) * dx
-            else:
-                edge_x = target_x
+            edge_x = target_x - ((target_y - edge_y) / dy) * dx if abs(dy) > 1e-10 else target_x
 
-    # Calculate placement: beam start (after rotation) should be at (edge_y, edge_x)
-    top = int(round(edge_y - rot_center_y - rot_offset_y))
-    left = int(round(edge_x - rot_center_x - rot_offset_x))
+    # Calculate where to place the rotated beam image
+    # We need the beam start point (which is at rot_center + rot_offset in the rotated image)
+    # to align with the edge entry point we just calculated
+    beam_start_in_rotated_y = rot_center_y + rot_offset_y
+    beam_start_in_rotated_x = rot_center_x + rot_offset_x
+
+    # These offsets position the rotated image so beam start aligns with edge entry
+    top = int(round(edge_y - beam_start_in_rotated_y))
+    left = int(round(edge_x - beam_start_in_rotated_x))
 
     # Prepare output image
     if rotated.ndim == 3:
@@ -766,95 +759,161 @@ def rotate_and_align_beam(imageA, imageB, angle, isocenter, latpos=0, longpos=0)
     else:
         result = np.zeros(grid_shape, dtype=rotated.dtype)
 
-    # Compute overlapping slice indices
-    src_y_start = max(0, -top)
+    # Calculate the overlapping region between rotated beam and reference image
+    # If beam is placed at top=-10, left=20:
+    # Beam's top 10 rows would be outside ref image (above top edge)
+    # -> We skip those rows and only copy what's visible
+
+    # Source region (what part of the rotated beam to copy)
+    if top < 0:
+        src_y_start = -top  # Skip rows that would be above ref image
+    else:
+        src_y_start = 0  # Start from beginning of rotated image
+
+    if left < 0:
+        src_x_start = -left  # Skip columns that would be left of ref image
+    else:
+        src_x_start = 0  # Start from beginning of rotated image
+
+    # Don't copy beyond what fits in the reference image
     src_y_end = min(rot_h, grid_shape[0] - top)
-    src_x_start = max(0, -left)
     src_x_end = min(rot_w, grid_shape[1] - left)
 
-    dst_y_start = max(0, top)
+    # Destination region (where to paste in the reference image)
+    dst_y_start = max(0, top)  # Clamp to image bounds
+    dst_x_start = max(0, left)  # Clamp to image bounds
+
+    # End positions maintain the same size as source region
     dst_y_end = dst_y_start + (src_y_end - src_y_start)
-    dst_x_start = max(0, left)
     dst_x_end = dst_x_start + (src_x_end - src_x_start)
 
-    # Paste rotated image
+    # Only copy the overlapping region of the rotated beam image on the ct_image
     result[dst_y_start:dst_y_end, dst_x_start:dst_x_end] = rotated[src_y_start:src_y_end, src_x_start:src_x_end]
 
-    plt.imshow(result)
     return result
 
 def stretch_and_compress_beam_raddepth(beam:np.ndarray, raddepth_matrix:np.ndarray, angle, isocenter,voxelsize,stepsize=0.2,
-                                       cutoff_dose_percentage=0.01)-> np.ndarray:
-    # Check Siddon and Brensemham algorithm for inspiration
+                                       beam_start_threshold=0.001)-> np.ndarray:
+    """Map a radiation beam onto patient anatomy, adjusting for tissue density variations.
 
-    first_ray_path_x, first_ray_path_y = [],[]
+    Casts rays through the patient's radiological depth map and samples beam intensity
+    values at positions determined by accumulated radiological depth. This accounts for
+    tissue density: rays travel further in low-density tissue (e.g., lung) and compress
+    in high-density tissue (e.g., bone).
+
+    PS: Check Siddon and Brensemham algorithm for inspiration
+
+    Args:
+        beam: 2D intensity profile of the radiation beam
+        raddepth_matrix: Radiological depth map derived from CT (accounts for tissue density)
+        angle: Beam angle in degrees
+        isocenter: Point where beam is aimed (y, x)
+        voxelsize: Physical size of each voxel in mm
+        stepsize: Ray marching step size (fraction of voxel)
+
+    Returns:
+        Masked 2D array of dose distribution in patient space
+    """
+    print('Stretch and compress beam according to raddepth')
+
     # Calculate ray direction vector from angle
     dy , dx = get_ray_direction_vector_from_angle(angle=angle)
 
     # Get ray x and y start positions
     valid_starts_y, valid_starts_x = get_ray_starting_positions(matrix_to_trace=beam,dx=dx,dy=dy,isocenter=isocenter)
 
-    # Get points in beam image which are 'valid starts' but have a beam intensity of value 0
-    zeros_mask = beam[valid_starts_y,valid_starts_x] != 0
-
-    # Filter x and y starting positions for values in the beam matrix > 0
-    # (only trace along the beam path where valeus are above 0)
-    filter_valid_starts_y, filter_valid_starts_x = valid_starts_y[zeros_mask], valid_starts_x[zeros_mask]
-
     # Initialize dose in pat matrix
     dose_in_pat_matrix = np.zeros_like(raddepth_matrix, dtype=float)
     visited = np.zeros_like(raddepth_matrix, dtype=bool)
 
     distance_per_step = voxelsize * stepsize
-
-    # Add the start x and y to the first ray debugging path
-    first_ray_path_x.append(filter_valid_starts_x[0])
-    first_ray_path_y.append(filter_valid_starts_y[0])
-
     rows, cols = raddepth_matrix.shape
-    # For each starting point, trace ray and calculate if beam needs to be stretched or compressed
-    for start_y, start_x in zip(filter_valid_starts_y, filter_valid_starts_x):
-        curr_rad_x, curr_rad_y = float(start_x), float(start_y)
-        curr_beam_x, curr_beam_y = float(start_x), float(start_y)
-        accumulated_raddepth = 0
 
-        # Trace ray along radiological depth (and beam matrix)
+    # Calculate beam intensity threshold (1% of max)
+    beam_max = np.max(beam)
+    beam_threshold = beam_start_threshold * beam_max  # 1% threshold for starting ray marching
+
+
+    # Track ray path containing max intensity beam voxels for debugging and visualization
+    max_ray_path_x , max_ray_path_y, max_beam_path_values = [], [], []
+    highest_ray_beam_val = 0  # Track the highest beam value found in a ray
+
+
+    # For each starting point, trace ray and through patient calculate if beam needs to be stretched or compressed
+    for start_y, start_x in zip(valid_starts_y, valid_starts_x):
+
+        # Find how much distance to skip along the beam ray before reaching threshold
+        beam_skip_distance = 0
+        beam_y, beam_x = float(start_y), float(start_x)
+
+        # March along the ray in BEAM space to find where intensity exceeds threshold
+        while 0 <= int(round(beam_y)) < rows and 0 <= int(round(beam_x)) < cols:
+            pixel_y, pixel_x = int(round(beam_y)), int(round(beam_x))
+
+            # Check if we've reached the threshold intensity
+            if beam[pixel_y, pixel_x] >= beam_threshold:
+                # Found where the beam becomes significant
+                # Calculate the distance we've traveled in beam space
+                beam_skip_distance = np.sqrt((beam_y - start_y) ** 2 + (beam_x - start_x) ** 2)
+                break
+
+            # Move to next position along ray in beam space
+            beam_y += dy
+            beam_x += dx
+
+        # If we never found a point above threshold, skip this ray entirely
+        if beam_skip_distance == 0 and beam[int(round(start_y)), int(round(start_x))] < beam_threshold:
+            continue
+
+        curr_rad_x, curr_rad_y = float(start_x), float(start_y)
+        ray_path_x, ray_path_y, beam_path_values = [], [],[]
+
+        # March ray through radiological depth matrix
         # for each y and x coordinate, check raddepth value and paint with value corresponding to x and y of the beam(depth)
         while 0 <= int(round(curr_rad_y)) < rows and 0 <= int(round(curr_rad_x)) < cols:
             # Get discrete pixel coordinates
             pixel_y, pixel_x = int(round(curr_rad_y)), int(round(curr_rad_x))
 
-            # Get ray raddepth
+            # Get ray raddepth and calculate beam depth - distance along beam based on accumulated radiological depth
             ray_raddepth = raddepth_matrix[pixel_y, pixel_x] * distance_per_step
+            beam_depth = ray_raddepth + beam_skip_distance
 
-            # Calculate beam depth - distance along beam based on accumulated radiological depth
-            beam_depth = ray_raddepth
-
-            # Calculate corresponding beam coordinates
+            # Map back to beam coordinates based on accumulated depth
             beam_y = int(round(start_y + beam_depth * dy))
             beam_x = int(round(start_x + beam_depth * dx))
 
-            # Sample beam value if within bounds
+            # Store the ray x and y coordinates in the radiological depth space
+            ray_path_x.append(curr_rad_x), ray_path_y.append(curr_rad_y)
+
+            # Transfer beam intensity to patient voxel (if unvisited and within bounds)
             if 0 <= beam_y < rows and 0 <= beam_x < cols and not visited[pixel_y, pixel_x]:
                 dose_in_pat_matrix[pixel_y, pixel_x] = beam[beam_y, beam_x]
                 visited[pixel_y, pixel_x] = True
+
+                 # Store mapped beam values
+                beam_path_values.append(beam[beam_y, beam_x])
 
             # Move to next position in radiological depth space
             curr_rad_x += dx
             curr_rad_y += dy
 
-            # Follow the first beam for debugging
-            if start_x == valid_starts_x[0] and start_y == valid_starts_y[0]:
-                first_ray_path_x.append(curr_rad_x), first_ray_path_y.append(curr_rad_y)
+        # Check the ray if it contains the maximum value intensity in the beam image, if so save for debug
+        if beam_path_values:
+            # Use maximum value encountered
+            max_ray_beam_val = np.max(beam_path_values)
 
-    print(f"First ray x and y coords: {[{'x': x, 'y': y} for x, y in zip(first_ray_path_x, first_ray_path_y)]}")
+            # If this ray has the highest beam val so far, save it
+            if max_ray_beam_val > highest_ray_beam_val:
+                highest_ray_beam_val = max_ray_beam_val
+                max_ray_path_x = ray_path_x
+                max_ray_path_y = ray_path_y
+                max_beam_path_values = beam_path_values
+
+    print(f"Highest intensity ray x and y coords: {[{'x': x, 'y': y} for x, y in zip(max_ray_path_x, max_ray_path_y)]}")
+    print(f"highest intensity ray beam values along path:{max_beam_path_values}")
     print("Finished casting rays.")
 
-    # Remove dose values below cutoff
-    dose_in_pat_matrix_masked = np.ma.masked_where(dose_in_pat_matrix<(cutoff_dose_percentage*dose_in_pat_matrix.max()),dose_in_pat_matrix)
-
-
-    return dose_in_pat_matrix_masked
+    return dose_in_pat_matrix
 
 
 def calculate_pencil_beam_dose(beamlet_dose:np.ndarray, angle:float, latpos:Dict[str,float]
@@ -873,6 +932,8 @@ def calculate_pencil_beam_dose(beamlet_dose:np.ndarray, angle:float, latpos:Dict
 
 
 def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:float, latpos:Dict[str,float]):
+    show_outside_body = False
+
     # Get CT data.
     tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
                            show_plot=False)
@@ -896,11 +957,22 @@ def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:
                                     (latpos.get('x')/tp_plan_obj.voxelsize), isocenter, raddepth_ct,
                                     voxelsize=tp_plan_obj.voxelsize)
 
-    plt.imshow(tp_plan_obj.ct,cmap='grey',origin='lower')
-    beam_ax = plt.imshow(pb.get('dose'), cmap='jet', origin='lower',alpha=0.5)
+    # Remove values outside pat
+    if not show_outside_body:
+        body_mask = get_body_mask(tp_plan_obj=tp_plan_obj)
+        outside_body = (body_mask == 0)
+        beam_dose = np.where(outside_body, 0, pb.get('dose'))
+
+    # Remove values below chosen percentage
+    remove_below_percentage = 1
+
+    # Remove/mask dose values below cutoff
+    beam_dose = np.ma.masked_where(beam_dose<((remove_below_percentage/100)*beam_dose.max()),beam_dose)
+
+
+    plt.imshow(tp_plan_obj.ct, cmap='grey', origin='lower')
+    beam_ax = plt.imshow(beam_dose, cmap='jet', origin='lower', alpha=0.5)
     plt.colorbar(beam_ax, label=f'beamlet dose [Gy]')
-
-
     plt.show()
 
 if __name__ == '__main__':
@@ -979,6 +1051,13 @@ if __name__ == '__main__':
         tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
         angle=45,
+        latpos={'x':45,'y':0}
+    )
+
+    show_pencil_beam_dose_on_ct(
+        tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+        beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
+        angle=135,
         latpos={'x':45,'y':0}
     )
 
