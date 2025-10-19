@@ -969,13 +969,33 @@ def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:
     remove_below_percentage = 1
 
     # Remove/mask dose values below cutoff
-    beam_dose = np.ma.masked_where(beam_dose<((remove_below_percentage/100)*beam_dose.max()),beam_dose)
+    beam_dose = np.ma.masked_where(beam_dose < ((remove_below_percentage / 100) * beam_dose.max()), beam_dose)
 
-
-    plt.imshow(tp_plan_obj.ct, cmap='grey', origin='lower')
+    ct_img = plt.imshow(tp_plan_obj.ct, cmap='grey', origin='lower')
     beam_ax = plt.imshow(beam_dose, cmap='jet', origin='lower', alpha=0.5)
+
+    # Get the current axes object
+    ax = plt.gca()
+
+    # Convert axis labels from voxel indices to mm
+    # Get current tick locations from the axes (not the image)
+    xticks = ax.get_xticks()
+    yticks = ax.get_yticks()
+
+    # Assuming voxelsize is a scalar or [x_size, y_size, z_size]
+    voxelsize_x = tp_plan_obj.voxelsize
+    voxelsize_y = tp_plan_obj.voxelsize
+
+    # Set new tick labels in mm on the axes (not the image)
+    ax.set_xticklabels([f'{tick * voxelsize_x:.1f}' for tick in xticks])
+    ax.set_yticklabels([f'{tick * voxelsize_y:.1f}' for tick in yticks])
+
+    # Add axis labels to the axes (not the image)
+    ax.set_xlabel('X [mm]')
+    ax.set_ylabel('Y [mm]')
+
     plt.colorbar(beam_ax, label=f'beamlet dose [Gy]')
-    plt.title(f'Beamlet in patient, angle:{angle}, latpos: {latpos.get("x")}')
+    plt.title(f'Beamlet in patient, angle:{angle}, latpos: {latpos.get("x")} mm')
     plt.show()
 
 if __name__ == '__main__':
@@ -1054,7 +1074,7 @@ if __name__ == '__main__':
         tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
         angle=45,
-        latpos={'x':45,'y':0},
+        latpos={'x':60,'y':0},
         voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
 
     )
@@ -1063,7 +1083,7 @@ if __name__ == '__main__':
         tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
         angle=135,
-        latpos={'x':45,'y':0},
+        latpos={'x':10,'y':0},
         voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
     )
 
