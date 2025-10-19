@@ -931,12 +931,14 @@ def calculate_pencil_beam_dose(beamlet_dose:np.ndarray, angle:float, latpos:Dict
     return {'angle':angle,'latpos':latpos,'dose':beam_corrected_for_raddepth}
 
 
-def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:float, latpos:Dict[str,float]):
+def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:float, latpos:Dict[str,float],
+                                voinames_colors_visualization: List[Tuple[str, str]] = None,
+):
     show_outside_body = False
 
     # Get CT data.
     tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
-                           show_plot=False)
+                           show_plot=False, voinames_colors_visualization=voinames_colors_visualization)
 
     # Get beamlet data
     beamletdose_obj, beamlet_img = visualize_beamletdose_data(beamletdose_path=beamletdose_path,
@@ -973,6 +975,7 @@ def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:
     plt.imshow(tp_plan_obj.ct, cmap='grey', origin='lower')
     beam_ax = plt.imshow(beam_dose, cmap='jet', origin='lower', alpha=0.5)
     plt.colorbar(beam_ax, label=f'beamlet dose [Gy]')
+    plt.title(f'Beamlet in patient, angle:{angle}, latpos: {latpos.get("x")}')
     plt.show()
 
 if __name__ == '__main__':
@@ -1051,14 +1054,17 @@ if __name__ == '__main__':
         tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
         angle=45,
-        latpos={'x':45,'y':0}
+        latpos={'x':45,'y':0},
+        voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
+
     )
 
     show_pencil_beam_dose_on_ct(
         tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
         angle=135,
-        latpos={'x':45,'y':0}
+        latpos={'x':45,'y':0},
+        voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
     )
 
     # #=====================================Week5===============================
