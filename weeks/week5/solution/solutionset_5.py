@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import scipy.ndimage
 from matplotlib.colors import ListedColormap
 import matplotlib.cm as cm
+from numpy.distutils.system_info import flame_info
 from scipy import ndimage
 
 
@@ -236,6 +237,7 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
     else:
         return tp_plan_obj, ct_img
 
+# #=====================================Week1===============================
 
 def plot_dose_visualization(tp_plan_obj, dose_cutoff: float = 2.0,
                             viz_mode: str = 'gradient',
@@ -393,6 +395,8 @@ def get_body_mask(tp_plan_obj:TPlan)-> np.ndarray:
 
     return body_mask
 
+
+# #=====================================Week3===============================
 
 def get_isocenter(tp_plan_obj:TPlan, isocenter_method):
     # Link the names of the vois to the voi fields coding numbers (luckily related to the order of the names)
@@ -601,6 +605,9 @@ def raddepth_on_ct(tp_plan_path:Path, angle:Union[float|int], isocenter_method='
     plt.colorbar(raddepth_img, label=f'rad depth Zrad, angle: {angle} degs')
     plt.show()
 
+ # #=====================================Week4===============================
+
+
 
 def visualize_beamletdose_data(beamletdose_path: Union[Path | str],show_plot:bool =True,
         plot_title: str = 'Beamlet image plot'):
@@ -636,6 +643,7 @@ def visualize_beamletdose_data(beamletdose_path: Union[Path | str],show_plot:boo
         return None
     else:
         return beamletdose_obj, beamletdose_img
+
 
 def interpolate_to_grid(from_img_data: np.ndarray,from_voxelsize:float = 0.5, to_img_data:np.ndarray = None, to_voxelsize:float =2.5)-> np.ndarray:
     """interpolate input image from voxelsize to voxelsize."""
@@ -1000,25 +1008,98 @@ def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:
 
  # #=====================================Week5===============================
 
-def define_bethe_bloch_constants()-> Dict:
-    proton_rest_mass = 1.672631*(10**-27)
-    electron_rest_mass = 9.1093897*(10**-31)
-    vacuum_permittivity = 8.854187817*(10**-12)
-    charge_of_the_electron = 1.60217733*(10**-19)
-    speed_of_light = 2.99792458*(10**8)
+def define_bethe_bloch_constants_variables()-> Dict:
+    proton_rest_mass = 1.672631*(10**-27) #kg
+    electron_rest_mass = 9.1093897*(10**-31) #kg
+    vacuum_permittivity = 8.854187817*(10**-12) #Coulombs^2/Jm
+    charge_of_the_electron = 1.60217733*(10**-19) #Coulombs
+    speed_of_light = 2.99792458*(10**8) #m/s
     avogadros_number = 6.0221367*(20**23)
-    molar_mass = 1.0 * (10**-3)
+    molar_mass = 1.0 * (10**-3) #kg per mole (protons)
 
-    constants = {'mp': proton_rest_mass, 'me':electron_rest_mass,'E0': vacuum_permittivity, 'e':charge_of_the_electron,
-                 'c': speed_of_light, 'Na':avogadros_number, 'Mu':molar_mass}
-    return constants
+    # specific water related values
+    ionization_potential_water = 75 # eV
+    ratio_electrons_nucleons_water = 10/18
+    mass_density_water = 1 # g/ml
+
+
+    constants_variables = {'mp': proton_rest_mass, 'me':electron_rest_mass,'E0': vacuum_permittivity, 'e':charge_of_the_electron,
+                 'c': speed_of_light, 'Na':avogadros_number, 'Mu':molar_mass, 'I_water':ionization_potential_water,
+                 'Z/A_water':ratio_electrons_nucleons_water, 'p_water':mass_density_water}
+
+    return constants_variables
+
+def get_electron_density(mass_density_material:float, molar_mass_protons:float, ratio_electrons_nucleons:float):
+    vars = define_bethe_bloch_constants_variables()
+    electron_density = mass_density_material*(vars.get('Na')/molar_mass_protons)*ratio_electrons_nucleons
+    return electron_density
+
+
+def get_material_dependent_variables(material: str):
+    vars = define_bethe_bloch_constants_variables()
+    if material == 'water':
+        ionization_potential = vars.get('I_water')
+        electron_density = get_electron_density(mass_density_material=vars.get('p_water'),
+                             ratio_electrons_nucleons=vars.get('Z/A_water'),
+                             molar_mass_protons = vars.get('Mu'),)
+    else:
+        raise ValueError('Relevant input value for material is missing')
+    return {'I':ionization_potential, 'Ne':electron_density}
+
+def bethe_bloch_equation_def(z,y):
+
+
+
+def euler_method(f, z0, zf, y0, step_size):
+    # Get number of steps
+    n_steps = (zf - z0) / step_size
+    # Set all z values to evaluate
+    x = np.linspace(z0, zf, step_size + 1)
+    # Set all y (E) values to evaluate
+    y = np.zeros(n_steps + 1)
+    # Set initial conditaion
+    y[0] = y0
+
+    # Use Euler method to make consecutive guesses to solve ODE
+    for i in range(n_steps):
+        y[i + 1] = y[i] + step_size * f(x[i], y[i])
+
+    return x, y
+
+def get_depth_dose_proton_without_range_stragg(start_energy_in_mev:float, material: str = 'water'):
+    '''Get the depth dose curve points for a case without range straggling'''
+    consts = define_bethe_bloch_constants_variables()
+    vars = get_material_dependent_variables(material)
+
+    # Depth range for which we want a solution: 0-100mm
+    z_span = (0,100)
+
+    # Eulers method y_n+1 = y_n + h × f(x_n, y_n)
+    step_size = 0.0125	# lower stepsize means lower error
+
+
+
+
+
+
+
+
+
 
 
 def plot_bethe_bloch_equations():
+    '''Calculate the depth dose curve of a proton beam using the bethe bloch equation which is relevant
+    in the proton energy range 3-300Mev
+    1. Plot the energy E of a proton
+    2. Plot energy loss of the proton dE/dZ without range straggling
+    3. Plot energy loss of the proton dE/dZ with range straggling'''
 
-    constants = define_bethe_bloch_constants()
+    # Plot energy E of a proton
+    get_depth_dose_proton_without_range_stragg(start_energy_in_mev=100, material='water')
 
+    # Plot energy loss of the proton dE/dZ without range straggling
 
+    # Plot energy loss of the proton dE/dZ with range straggling
 
 if __name__ == '__main__':
     # #=====================================Week1===============================
