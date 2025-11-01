@@ -2,7 +2,7 @@
 File: solutionset_4.py
 Author: Ruben Bosschaert
 Creation date: 20 Sept 2025
-Description: This script provides the solution to problemset_4,
+Description: This script provides the solution to problemset_5,
 
 Simply run this file script and the name == main function at the end of the script should generate the relevant outputs. """
 
@@ -15,7 +15,9 @@ from matplotlib.colors import ListedColormap
 import matplotlib.cm as cm
 from numpy.distutils.system_info import flame_info
 from scipy import ndimage
+import math
 
+from scipy.ndimage import gaussian_filter1d
 
 from utils.helpers import mat_loader
 
@@ -1008,98 +1010,375 @@ def show_pencil_beam_dose_on_ct(tp_plan_path:Path, beamletdose_path:Path, angle:
 
  # #=====================================Week5===============================
 
-def define_bethe_bloch_constants_variables()-> Dict:
-    proton_rest_mass = 1.672631*(10**-27) #kg
-    electron_rest_mass = 9.1093897*(10**-31) #kg
-    vacuum_permittivity = 8.854187817*(10**-12) #Coulombs^2/Jm
-    charge_of_the_electron = 1.60217733*(10**-19) #Coulombs
-    speed_of_light = 2.99792458*(10**8) #m/s
-    avogadros_number = 6.0221367*(20**23)
-    molar_mass = 1.0 * (10**-3) #kg per mole (protons)
+def define_bethe_bloch_constants_variables() -> Dict:
+    """Define all constants in SI units as specified in the problem set"""
+    proton_rest_mass = 1.672631e-27  # kg
+    electron_rest_mass = 9.1093897e-31  # kg
+    vacuum_permittivity = 8.854187817e-12  # C^2/(J·m)
+    charge_of_the_electron = 1.60217733e-19  # Coulombs
+    speed_of_light = 2.99792458e8  # m/s
+    avogadros_number = 6.0221367e23  # particles per mole (FIXED: was 20**23!)
 
-    # specific water related values
-    ionization_potential_water = 75 # eV
-    ratio_electrons_nucleons_water = 10/18
-    mass_density_water = 1 # g/ml
+    # Water properties
+    ionization_potential_water = 75  # eV
+    mass_density_water = 1000  # kg/m^3 (1 g/cm^3)
+    molar_mass_water = 1.0e-3  # kg/mol for H2O
+    electrons_per_molecule_water_ratio = (10/18)
 
-
-    constants_variables = {'mp': proton_rest_mass, 'me':electron_rest_mass,'E0': vacuum_permittivity, 'e':charge_of_the_electron,
-                 'c': speed_of_light, 'Na':avogadros_number, 'Mu':molar_mass, 'I_water':ionization_potential_water,
-                 'Z/A_water':ratio_electrons_nucleons_water, 'p_water':mass_density_water}
+    constants_variables = {
+        'mp': proton_rest_mass,
+        'me': electron_rest_mass,
+        'epsilon0': vacuum_permittivity,
+        'e': charge_of_the_electron,
+        'c': speed_of_light,
+        'Na': avogadros_number,
+        'Mu_water': molar_mass_water,
+        'I_water': ionization_potential_water,
+        'Z_water': electrons_per_molecule_water_ratio,
+        'rho_water': mass_density_water
+    }
 
     return constants_variables
 
-def get_electron_density(mass_density_material:float, molar_mass_protons:float, ratio_electrons_nucleons:float):
-    vars = define_bethe_bloch_constants_variables()
-    electron_density = mass_density_material*(vars.get('Na')/molar_mass_protons)*ratio_electrons_nucleons
+
+def get_electron_density(mass_density: float, molar_mass: float,
+                         electrons_per_molecule: float, avogadros_number: float) -> float:
+    """
+    Calculate electron density Ne using formula.
+
+    Ne = ρ * (NA/Mu) * Z
+
+    Where:
+    - ρ: mass density (kg/m³)
+    - NA: Avogadro's number (molecules/mol)
+    - Mu: molar mass (kg/mol)
+    - Z: electrons per molecule
+
+    Returns: electrons per m^3
+    """
+    # ρ/Mu = molar density (mol/m³)
+    # (ρ/Mu) * NA = molecules/m³
+    # (ρ/Mu) * NA * Z = electrons/m³
+    electron_density = mass_density * (avogadros_number / molar_mass) * electrons_per_molecule
     return electron_density
 
 
-def get_material_dependent_variables(material: str):
-    vars = define_bethe_bloch_constants_variables()
-    if material == 'water':
-        ionization_potential = vars.get('I_water')
-        electron_density = get_electron_density(mass_density_material=vars.get('p_water'),
-                             ratio_electrons_nucleons=vars.get('Z/A_water'),
-                             molar_mass_protons = vars.get('Mu'),)
-    else:
-        raise ValueError('Relevant input value for material is missing')
-    return {'I':ionization_potential, 'Ne':electron_density}
+def calculate_beta_squared_from_energy(energy_joules: float, mp: float, c: float) -> float:
+    """
+    Calculate β² from kinetic energy using equation (5):
+    E = mp*c²/√(1-β²) - mp*c²
 
-def bethe_bloch_equation_def(z,y):
+    Solving for β²:
+    β² = E(E + 2mp*c²) / (E + mp*c²)²
+    """
+    if energy_joules <= 0:
+        return 0.0
 
+    mp_c2 = mp * c ** 2
+    beta_squared = (energy_joules * (energy_joules + 2 * mp_c2)) / ((energy_joules + mp_c2) ** 2)
 
+    # beta squared is expected to be within 0 and 1 due to dominant denominator. It cannot be negative (not phyisical)
+    if beta_squared >= 1.0 or beta_squared <= 0:
+        return 0.0
 
-def euler_method(f, z0, zf, y0, step_size):
-    # Get number of steps
-    n_steps = (zf - z0) / step_size
-    # Set all z values to evaluate
-    x = np.linspace(z0, zf, step_size + 1)
-    # Set all y (E) values to evaluate
-    y = np.zeros(n_steps + 1)
-    # Set initial conditaion
-    y[0] = y0
-
-    # Use Euler method to make consecutive guesses to solve ODE
-    for i in range(n_steps):
-        y[i + 1] = y[i] + step_size * f(x[i], y[i])
-
-    return x, y
-
-def get_depth_dose_proton_without_range_stragg(start_energy_in_mev:float, material: str = 'water'):
-    '''Get the depth dose curve points for a case without range straggling'''
-    consts = define_bethe_bloch_constants_variables()
-    vars = get_material_dependent_variables(material)
-
-    # Depth range for which we want a solution: 0-100mm
-    z_span = (0,100)
-
-    # Eulers method y_n+1 = y_n + h × f(x_n, y_n)
-    step_size = 0.0125	# lower stepsize means lower error
+    return beta_squared
 
 
+def bethe_bloch_stopping_power(energy_joules: float, const_vars: Dict, Ne: float, I_joules: float) -> float:
+    """
+    Calculate stopping power S(E) = -dE/dz using Bethe-Bloch equation (1):
+
+    -dE/dz = (4πe⁴)/(me*c²) * (Ne/β²) * (1/(4πε₀))² * [ln(2me*c²*β²/(I(1-β²))) - β²]
+
+    Returns: -dE/dz in J/m (negative value representing energy loss)
+    """
+    if energy_joules <= 0:
+        return 0.0
+
+    # Extract constants
+    me = const_vars['me']
+    mp = const_vars['mp']
+    c = const_vars['c']
+    e = const_vars['e']
+    epsilon0 = const_vars['epsilon0']
+
+    # Calculate β²
+    beta_squared = calculate_beta_squared_from_energy(energy_joules, mp, c)
+
+    if beta_squared >= 1.0 or beta_squared <= 0:
+        return 0.0
+
+    # Bethe-Bloch formula - equation (1)
+    # Term 1: (1/(4πε₀))²
+    term1 = (1.0 / (4.0 * np.pi * epsilon0)) ** 2
+
+    # Term 2: (4πe⁴*Ne)/(me*c²*β²)
+    me_c2 = me * c ** 2
+    term2 = (4.0 * np.pi * e ** 4 * Ne) / (me_c2 * beta_squared)
+
+    # Term 3: ln(2me*c²*β²/(I(1-β²))) - β²
+    numerator = 2.0 * me_c2 * beta_squared
+    denominator = I_joules * (1.0 - beta_squared)
+
+    if denominator <= 0:
+        return 0.0
+
+    term3 = np.log(numerator / denominator) - beta_squared
+
+    # Complete Bethe-Bloch
+    stopping_power = -term1 * term2 * term3
+
+    return stopping_power
 
 
+def solve_bethe_bloch_csda(initial_energy_mev: float,
+                           step_size_mm: float = 0.0001,
+                           max_depth_mm: float = 500) -> Tuple:
+    """
+    Solve Bethe-Bloch equation using Euler method (equation 3):
+    [E(z + Δz) - E(z)] / Δz = S(E(z))
+
+    Returns depth-dose curve in CSDA (Continuous Slowing Down Approximation).
+    """
+    # Get constants
+    const_vars = define_bethe_bloch_constants_variables()
+
+    # Calculate electron density for water
+    Ne = get_electron_density(
+        mass_density=const_vars['rho_water'],
+        molar_mass=const_vars['Mu_water'],
+        electrons_per_molecule=const_vars['Z_water'],
+        avogadros_number=const_vars['Na']
+    )
+
+    print(f"Electron density: Ne = {Ne:.4e} electrons/m³")
+
+    # Convert ionization potential to Joules
+    I_joules = const_vars['I_water'] * const_vars['e']
+
+    # Convert units
+    step_size_m = step_size_mm * 1e-3  # mm to m
+    energy_joules = initial_energy_mev * 1e6 * const_vars['e']  # MeV to Joules
+
+    # Initialize
+    z_list = [0.0]
+    E_list = [initial_energy_mev]
+    dose_list = []
+
+    z_current = 0.0
+    E_current = energy_joules
+
+    # Euler integration
+    max_iterations = int(max_depth_mm / step_size_mm) + 1
+    for iteration in range(max_iterations):
+        # Calculate stopping power at current energy
+        S_current = bethe_bloch_stopping_power(E_current, const_vars, Ne, I_joules)
+
+        # Convert stopping power to MeV/mm for dose curve
+        # S_current is in J/m, convert to MeV/mm
+        dose_mev_per_mm = -S_current / (const_vars['e'] * 1e6) / 1e3
+        dose_list.append(dose_mev_per_mm)
+
+        # Update energy: E_new = E_old + S(E_old) * Δz
+        E_new = E_current + S_current * step_size_m
+
+        # Stop if energy drops to zero or becomes very small
+        # Improvement: implement adaptive threshold
+        if E_new <= 0.0000001 * energy_joules:
+            E_new = 0
+            z_current += step_size_m
+            z_list.append(z_current * 1e3)
+            E_list.append(0)
+            # No dose at zero energy
+            break
+
+        # Update position
+        z_current += step_size_m
+        E_current = E_new
+
+        # Store values
+        z_list.append(z_current * 1e3)  # Convert to mm
+        E_list.append(E_current / (const_vars['e'] * 1e6))  # Convert to MeV
+
+    range_mm = z_list[-1]
+
+    # Convert to numpy arrays (ensure all have same length)
+    z_mm = np.array(z_list[:-1])  # Remove last element to match dose_list
+    E_mev = np.array(E_list[:-1])
+    dose_mev_per_mm = np.array(dose_list)
+
+    return z_mm, E_mev, dose_mev_per_mm, range_mm
 
 
+def apply_range_straggling(z_mm: np.ndarray, dose: np.ndarray, range_cm: float) -> np.ndarray:
+    """
+    Apply range straggling by convolving dose with Gaussian (equation 4):
+    σ_R = 0.012 * R^0.935
+
+    where R is the range in centimeters.
+    """
+    # Calculate standard deviation from equation (4)
+    sigma_cm = 0.012 * (range_cm ** 0.935)
+    sigma_mm = sigma_cm * 10  # Convert cm to mm
+
+    # Convert sigma to array indices
+    dz = z_mm[1] - z_mm[0] if len(z_mm) > 1 else 0.01
+    sigma_indices = sigma_mm / dz
+
+    # Apply Gaussian filter (convolution with Gaussian)
+    dose_with_straggling = gaussian_filter1d(dose, sigma=sigma_indices, mode='constant')
+
+    # # Normalize to preserve total energy deposition
+    # if np.sum(dose_with_straggling) > 0:
+    #     dose_with_straggling *= np.sum(dose) / np.sum(dose_with_straggling)
+
+    return dose_with_straggling
 
 
+def plot_proton_depth_dose_results(z, E, dose_csda, dose_straggling, range, initial_energy):
+    """Plot the results"""
+    fig, (ax) = plt.subplots(figsize=(12, 10))
+
+    ax.plot(z, E, 'blue',  label='E (residual)', linewidth=2)
+    ax.plot(z, dose_csda, 'red', linewidth=2, label='CSDA (without straggling)', alpha=0.7)
+    ax.plot(z, dose_straggling, 'black', linewidth=2, label='With range straggling')
+    ax.axvline(range, color='gray', linestyle='--', alpha=0.2)
+    ax.set_xlabel('Depth z (cm)', fontsize=12)
+    ax.set_ylabel('Proton residual energy (MeV), Energy Deposition -dE/dz (MeV/cm)', fontsize=12)
+    ax.set_title(f'Bragg Curve with range: {range:.2f} cm', fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=10)
+    ax.set_xlim(left=0, right=range*1.35)
+    ax.set_ylim(bottom=0, top= np.max(E)*1.35)
+
+    plt.tight_layout()
+    return fig
 
 
+def verify_range(initial_energy_mev: float, calculated_range_mm: float):
+    """Verify the calculated range against NIST/PSTAR reference data"""
+    # Reference data from NIST/PSTAR database
+    reference_data = {
+        10: 1.25,  # mm
+        30: 8.96,  # mm
+        50: 22,  # mm
+        100: 77.93,  # mm
+        200: 260,  # mm
+        300: 518.7  # mm
+    }
 
-def plot_bethe_bloch_equations():
-    '''Calculate the depth dose curve of a proton beam using the bethe bloch equation which is relevant
-    in the proton energy range 3-300Mev
-    1. Plot the energy E of a proton
-    2. Plot energy loss of the proton dE/dZ without range straggling
-    3. Plot energy loss of the proton dE/dZ with range straggling'''
+    print("\n" + "=" * 70)
+    print("RANGE VERIFICATION")
+    print("=" * 70)
+    print(f"Initial Energy: {initial_energy_mev} MeV")
+    print(f"Calculated Range: {calculated_range_mm:.2f} mm ({calculated_range_mm / 10:.2f} cm)")
 
-    # Plot energy E of a proton
-    get_depth_dose_proton_without_range_stragg(start_energy_in_mev=100, material='water')
+    # Find closest reference energy
+    closest_energy = min(reference_data.keys(), key=lambda x: abs(x - initial_energy_mev))
+    if abs(closest_energy - initial_energy_mev) < 30:
+        expected_range = reference_data[closest_energy]
+        error_percent = abs(calculated_range_mm - expected_range) / expected_range * 100
+        print(f"\nReference (NIST/PSTAR) for {closest_energy} MeV: ~{expected_range} mm")
+        print(f"Difference: {error_percent:.1f}%")
 
-    # Plot energy loss of the proton dE/dZ without range straggling
+        if error_percent < 1:
+            print("Result is - EXCELLENT - within 1% of NIST data!")
+        elif error_percent < 2.5:
+            print("Result is - GOOD - within 2.5% of NIST data")
+        elif error_percent < 5:
+            print("Result is - OKAY - within 5% of NIST data")
+        else:
+            print("Result differs significantly from reference")
+    print("=" * 70 + "\n")
 
-    # Plot energy loss of the proton dE/dZ with range straggling
+
+def bethe_bloch_depth_dose_debug_table(dose_csda,dose_straggling, E, z, range_cm):
+    # Find Bragg peak locations
+    peak_idx_csda = np.argmax(dose_csda)
+    peak_idx_strag = np.argmax(dose_straggling)
+
+
+    print(f"Results Summary:")
+    print(f"  Range: {range_cm*10:.2f} mm ({range_cm:.2f} cm)")
+    print(f"  Number of integration steps: {len(z)}")
+    print(f"  CSDA Bragg peak:")
+    print(f"    - Position: {z[peak_idx_csda]:.2f} mm")
+    print(f"    - Height: {dose_csda[peak_idx_csda]:.2f} MeV/mm")
+    print(f"  With range straggling:")
+    print(f"    - Peak position: {z[peak_idx_strag]:.2f} mm")
+    print(f"    - Peak height: {dose_straggling[peak_idx_strag]:.2f} MeV/mm")
+    print(f"  Range straggling σ: {0.012 * (range_cm ** 0.935) * 10:.2f} mm")
+
+    # Show sample data points
+    print(f"\n  Sample depth-dose data:")
+    print(f"  {'Depth(mm)':<12} {'Energy(MeV)':<14} {'CSDA(MeV/mm)':<16} {'Straggling(MeV/mm)':<20}")
+    print(f"  {'-' * 72}")
+
+    # Sample at different depths
+    sample_indices = [
+        0,  # Start
+        len(z) // 10,  # 10%
+        len(z) // 4,  # 25%
+        len(z) // 2,  # 50%
+        3 * len(z) // 4,  # 75%
+        peak_idx_csda,  # Peak
+        min(len(z) - 1, peak_idx_csda + 5)  # Just past peak
+    ]
+
+    for i in sorted(set(sample_indices)):
+        if i < len(z):
+            marker = " ← BRAGG PEAK" if i == peak_idx_csda else ""
+            print(f"  {z[i]:<12.2f} {E[i]:<14.2f} {dose_csda[i]:<16.3f} "
+                  f"{dose_straggling[i]:<20.3f}{marker}")
+
+
+def calculate_and_plot_residual_e_and_de_dz_with_and_without_range_straggling(
+        energies_to_test:List[int]=[10, 50, 100, 300],
+        debug_table:bool=False
+):
+    print("\n" + "=" * 70)
+    print("BETHE-BLOCH DOSE-DEPTH CALCULATION")
+    print("Proton therapy in water - CSDA with range straggling")
+    print("=" * 70 + "\n")
+
+    for initial_energy in energies_to_test:
+        print(f"\n{'=' * 70}")
+        print(f"Solving for {initial_energy} MeV proton in water")
+        print(f"{'=' * 70}")
+
+        # Solve Bethe-Bloch in CSDA (without range straggling)
+        z, E, dose_csda, range_mm = solve_bethe_bloch_csda(
+            initial_energy_mev=initial_energy,
+            step_size_mm=0.001,
+            max_depth_mm=500
+        )
+
+        # Apply range straggling (equation 4)
+        range_cm = range_mm / 10
+        dose_straggling = apply_range_straggling(z, dose_csda, range_cm)
+
+        # Verify against NIST data
+        verify_range(initial_energy, range_mm)
+
+        if debug_table:
+            bethe_bloch_depth_dose_debug_table(dose_csda,dose_straggling, E, z, range_cm)
+
+        # Create and save plot
+        # Convert from mm to cm
+        dose_csda = dose_csda * 10
+        dose_straggling = dose_straggling * 10
+        z = z / 10
+
+        fig = plot_proton_depth_dose_results(z, E, dose_csda, dose_straggling, range_cm, initial_energy)
+        filename = f'proton_depth_dose_curve_{initial_energy}MeV.png'
+        plt.savefig(f'{filename}', dpi=150, bbox_inches='tight')
+        print(f"\n Plot saved: {filename}")
+        plt.close()
+
+    print(f"\n{'=' * 70}")
+    print("Finished Bethe Bloch dose depth curve calculations!")
+    print("=" * 70)
+
 
 if __name__ == '__main__':
     # #=====================================Week1===============================
@@ -1173,21 +1452,35 @@ if __name__ == '__main__':
 
     # #=====================================Week4===============================
 
-    show_pencil_beam_dose_on_ct(
-        tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
-        beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
-        angle=45,
-        latpos={'x':60,'y':0},
-        voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
-
-    )
-
-    show_pencil_beam_dose_on_ct(
-        tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
-        beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
-        angle=135,
-        latpos={'x':10,'y':0},
-        voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
-    )
+    # show_pencil_beam_dose_on_ct(
+    #     tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+    #     beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
+    #     angle=45,
+    #     latpos={'x':60,'y':0},
+    #     voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
+    #
+    # )
+    #
+    # show_pencil_beam_dose_on_ct(
+    #     tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+    #     beamletdose_path=str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
+    #     angle=135,
+    #     latpos={'x':10,'y':0},
+    #     voinames_colors_visualization=[('tumor', 'purple'),('esophagus','magenta'),('spinal cord','brown')],
+    # )
 
     # #=====================================Week5===============================
+
+    #Generate data and solve for 100MeV
+    calculate_and_plot_residual_e_and_de_dz_with_and_without_range_straggling(energies_to_test=[50,100,300])
+
+    #Work on summary
+    # 0/ introduction
+    # 1. energy fluence
+    # 2. Classical bethe bloch
+    # 3. Relativistic bethe bloch
+    # 4. Stopping power
+    # - residual energy as a function of depth
+    # - stopping power in terms of depth
+    # 5. Range straggling
+
