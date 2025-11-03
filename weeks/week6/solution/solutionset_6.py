@@ -1,5 +1,5 @@
 """
-File: solutionset_4.py
+File: solutionset_6.py
 Author: Ruben Bosschaert
 Creation date: 20 Sept 2025
 Description: This script provides the solution to problemset_6,
@@ -484,8 +484,9 @@ def get_ray_starting_positions(matrix_to_trace:np.ndarray, dx:float,dy:float, is
     rim_y, rim_x = rim_coords[0], rim_coords[1]
 
     # Extract isocenter coordinates from dictionary
-    isocenter_x = isocenter['x']
-    isocenter_y = isocenter['y']
+    # UPDATE: Do not use isocenter anymore in this function and this pass 0 until function sig is updated
+    isocenter_x = 0
+    isocenter_y = 0
 
     # Check if ray direction points toward isocenter (or image center) from rim
     # For this we use the dot product test (v₁ · v₂ = v₁ₓ × v₂ₓ + v₁ᵧ × v₂ᵧ),
@@ -1419,9 +1420,12 @@ def show_proton_pencil_beam_dose_on_ct(
     # Parse proton dose data
     protondose_data = get_proton_dose_data(protondosesfile_path=protondosesfile_path)
 
-    # Get raddepth matrix
+    # Get Raddepth matrix from ct for angle, boxelsize and stepsize
+    raddepth_ct = calculate_raddepth(ct_scan=tp_plan_obj.ct,
+                                     isocenter=get_isocenter(tp_plan_obj=tp_plan_obj, isocenter_method='com_tumor'),
+                                     pixel_size=tp_plan_obj.voxelsize,step_size=0.2, angle=angle)
 
-    # Shift beam from isocenter by latpos (latpos from beam axis) in voxels, check comments exercise 4)
+    # Shift beam from isocenter by latpos (latpos from beam axis) in voxels, check discussion/comments exercise 4)
 
     # Compute dose
 
