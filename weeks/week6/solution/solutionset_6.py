@@ -1396,41 +1396,237 @@ def get_proton_dose_data(protondosesfile_path:Path) -> Dict[str,Any]:
             'proton_dose_data_d0': text[0:len(text),1],
             'proton_dose_data_sigma': text[0:len(text),2],}
 
-def calculate_proton_pencil_beam_dose(angle, init_energy, latpos, raddepth, tp_plan_obj) -> Dict:
 
-    return {"angle": angle, "energy": init_energy, "latpos": latpos, "dose": dose_in_pat_matrix}
+def calculate_proton_pencil_beam_dose(angle, init_energy, latpos, raddepth, tp_plan_obj,
+                                      protondose_data=None) -> Dict:
+    """
+    Calculate proton pencil beam dose distribution using direct lookup (no interpolation).
+
+    The dose is calculated using a Gaussian pencil beam model:
+    D(x,y,z) = D0(z,E0) * [1/(2πσ²)] * exp[-(x²+y²)/(2σ²)]
+
+    For 2D calculations, we set y=0 in the beam coordinate system.
+
+    Parameters:
+    -----------
+    angle : float
+        Beam angle in degrees using convention:
+        0° = top to bottom, 90° = right to left, 180° = bottom to top, 270° = left to right
+    init_energy : float
+        Initial proton energy in MeV
+    latpos : dict
+        Lateral position of beam's central axis relative to isocenter {'x': float, 'y': float} in mm
+    raddepth : numpy.ndarray
+        Radiological depth matrix for the beam angle (in ct grid)
+    tp_plan_obj : object
+        Treatment plan object containing CT data and voxel size
+    protondose_data : dict, optional
+        Pre-loaded proton dose data (depth, D0, sigma)
+    protondosesfolder_path : Path, optional
+        Path to proton dose data folder (if protondose_data not provided)
+
+    Returns:
+    --------
+    dict : Dictionary containing angle, energy, latpos, and dose distribution
+    """
+
+    # =====================================================================
+    # Initialize dose calculation
+    # =====================================================================
+    # Extract depth-dependent beam parameters from lookup table
+    depth_mm = protondose_data['proton_dose_data_depth_mm']  # Depth in water (mm)
+    D0 = protondose_data['proton_dose_data_d0']  # Central axis dose
+    sigma = protondose_data['proton_dose_data_sigma']  # Beam width (standard deviation)
+
+    # Get CT dimensions
+    ct_shape = raddepth.shape
+
+    # Initialize dose matrix
+    dose_in_pat_matrix = np.zeros(ct_shape)
+
+    # Get voxel size in mm (2.5mm)
+    voxel_size = tp_plan_obj.voxelsize  # float, in mm (e.g., 2.5 mm)
+
+    # Adjust to convention 0°= up, 90°=right, 180°=down, 270°=left (clockwise)
+    # from convention: 0°=right, 90°=up, 180°=left, 270°=down (counter-clockwise)
+    angle_math = 270 - angle
+    angle_rad = np.radians(angle_math)
+
+    # Get isocenter position (reference point for beam)
+    isocenter = get_isocenter(tp_plan_obj=tp_plan_obj, isocenter_method='com_tumor')
+
+    # =====================================================================
+    # Calculate dose for each voxel in the CT slice
+    # =====================================================================
+    # Loop over each voxel
+    for i in range(ct_shape[0]):  # Loop over rows (y-direction)
+        for j in range(ct_shape[1]):  # Loop over columns (x-direction)
+
+            # Get radiological depth for this voxel
+            zrad = raddepth[i, j]
+
+            # Look up beam parameters at this raddepth
+            # Find the closest tabulated depth value in our proton dose Monte Carlo data
+            depth_idx = np.argmin(np.abs(depth_mm - zrad))
+
+            # Retrieve D0 and sigma at this depth from lookup table
+            D0_val = D0[depth_idx]  # Central axis dose at depth zrad
+            sigma_val = sigma[depth_idx]  # Beam width (std dev) at depth zrad
+
+            # Skip if sigma is very low, (sigma ≈ 0 indicates invalid data point)
+            if sigma_val <= 1e-10:
+                continue
+
+            # ---------------------------------------------------------
+            # Convert voxel position to physical coordinates
+            # ---------------------------------------------------------
+            # Convert from voxel indices (i,j) to physical position in mm
+            voxel_y = i * voxel_size  # Row index → y-coordinate (mm)
+            voxel_x = j * voxel_size  # Column index → x-coordinate (mm)
+
+            # Convert isocenter from voxel indices to physical coordinates
+            iso_y = isocenter.get('y') * voxel_size  # mm
+            iso_x = isocenter.get('x') * voxel_size  # mm
+
+            # Calculate position relative to isocenter (origin of beam coordinate system)
+            rel_x = voxel_x - iso_x  # mm
+            rel_y = voxel_y - iso_y  # mm
+
+            # ---------------------------------------------------------
+            # Transform to beam coordinate system
+            # ---------------------------------------------------------
+            # The beam coordinate system has:
+            # - y-axis along the beam direction (direction of propagation)
+            # - x-axis perpendicular to beam (lateral direction)
+            # - z-axis out of plane (set to 0 for 2D and dont take into account)
+
+            # We need the perpendicular distance from the beam's central axis
+            # Rotation formula: x_beam = -x*sin(θ) + y*cos(θ)
+            x_beam = -rel_x * np.sin(angle_rad) + rel_y * np.cos(angle_rad)
+
+            # Apply lateral beam offset (if beam center is not at isocenter)
+            # latpos['x'] shifts the beam laterally in the beam coordinate system
+            x_beam_shifted = x_beam - latpos['x']
+
+            # ---------------------------------------------------------
+            # Calculate dose using Gaussian pencil beam model
+            # ---------------------------------------------------------
+            # Lateral distance squared from beam axis (for y=0 in 2D)
+            lateral_distance_squared = x_beam_shifted ** 2
+
+            # Gaussian dose distribution formula:
+            # D(x) = D0 * [1/(2πσ²)] * exp[-x²/(2σ²)]
+            #
+            # Components:
+            # 1. D0_val: central axis dose at this depth
+            # 2. normalization: ensures proper integral over lateral dimension
+            # 3. exponential: Gaussian falloff with lateral distance
+
+            normalization = 1.0 / (2.0 * np.pi * sigma_val ** 2)
+            exponential = np.exp(-lateral_distance_squared / (2.0 * sigma_val ** 2))
+            dose = D0_val * normalization * exponential
+
+            # Store calculated dose in the patient dose matrix
+            dose_in_pat_matrix[i, j] = dose
+
+    return {
+        "angle": angle,  # Beam angle
+        "energy": init_energy,  # Initial proton energy (MeV)
+        "latpos": latpos,  # Lateral position offset (mm)
+        "dose": dose_in_pat_matrix  # 2D dose distribution
+    }
+
 
 def show_proton_pencil_beam_dose_on_ct(
-        tp_plan_path: Path =str(project_root_provider()) + r'.\utils\data\patientdata.mat',
-        protondosesfolder_path: Path =str(project_root_provider()) + r'.\utils\data\protondosedata',
-        initial_energy: float =0.0,  # MeV
+        tp_plan_path: Path = str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+        protondosesfolder_path: Path = str(project_root_provider()) + r'.\utils\data\protondosedata',
+        initial_energy: float = 0.0,  # MeV
         angle: float = 0.0,
-        latpos: Dict[str,float] = {'x' : 0, 'y' : 0},
+        latpos: Dict[str, float] = None,
         voinames_colors_visualization: List[Tuple[str]] = None):
+    """
+    Visualize proton pencil beam dose distribution on CT.
+
+    Parameters:
+    -----------
+    tp_plan_path : Path
+        Path to treatment plan data file
+    protondosesfolder_path : Path
+        Path to folder containing proton dose data files
+    initial_energy : float
+        Initial proton energy in MeV
+    angle : float
+        Beam angle in degrees
+    latpos : dict
+        Lateral position of beam {'x': float, 'y': float}
+    voinames_colors_visualization : list
+        List of VOI names and colors for visualization
+    """
+
+    if latpos is None:
+        latpos = {'x': 0.0, 'y': 0.0}
 
     show_outside_body = False
 
-    # Get CT data.
-    tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
-                           show_plot=False, voinames_colors_visualization=voinames_colors_visualization)
+    # Get CT data
+    tp_plan_obj, _ = visualize_tp_plan_data(
+        tp_plan_path=tp_plan_path,
+        show_plot=False,
+        voinames_colors_visualization=voinames_colors_visualization
+    )
 
     # Get proton beam data
     # Construct path to proton beam dose file based on init energy
     protondosesfile_path = Path(protondosesfolder_path) / Path(f'pbmcs{str(float(initial_energy))}.dat')
+
     # Parse proton dose data
     protondose_data = get_proton_dose_data(protondosesfile_path=protondosesfile_path)
 
-    # Get Raddepth matrix from ct for angle, boxelsize and stepsize
-    raddepth_ct = calculate_raddepth(ct_scan=tp_plan_obj.ct,
-                                     isocenter=get_isocenter(tp_plan_obj=tp_plan_obj, isocenter_method='com_tumor'),
-                                     pixel_size=tp_plan_obj.voxelsize,step_size=0.2, angle=angle)
+    # Get isocenter
+    isocenter = get_isocenter(tp_plan_obj=tp_plan_obj, isocenter_method='com_tumor')
 
-    # Shift beam from isocenter by latpos (latpos from beam axis) in voxels, check discussion/comments exercise 4)
+    # Get Raddepth matrix from ct for angle, voxel size and step size
+    raddepth_ct = calculate_raddepth(
+        ct_scan=tp_plan_obj.ct,
+        isocenter=isocenter,
+        pixel_size=tp_plan_obj.voxelsize,
+        step_size=0.2,
+        angle=angle
+    )
 
-    # Compute dose
+    # Compute dose distribution using pencil beam algorithm
+    pb_result = calculate_proton_pencil_beam_dose(
+        angle=angle,
+        init_energy=initial_energy,
+        latpos=latpos,
+        raddepth=raddepth_ct,
+        tp_plan_obj=tp_plan_obj,
+        protondose_data=protondose_data
+    )
 
-    # protondose_data = calculate_proton_pencil_beam_dose(angle, initial_energy, latpos, raddepth, tp_plan_obj)
-    pass
+    # Remove values outside pat
+    if not show_outside_body:
+        body_mask = get_body_mask(tp_plan_obj=tp_plan_obj)
+        outside_body = (body_mask == 0)
+        beam_dose = np.where(outside_body, 0, pb_result.get('dose'))
+
+    # Remove values below chosen percentage
+    remove_below_percentage = 1
+
+    # Remove/mask dose values below cutoff
+    beam_dose = np.ma.masked_where(beam_dose < ((remove_below_percentage / 100) * beam_dose.max()), beam_dose)
+
+    # Visualize dose distribution on CT
+    ct_img = plt.imshow(tp_plan_obj.ct,origin='lower', cmap='grey')
+    protondose_img = plt.imshow(beam_dose,origin='lower', cmap='jet', alpha=0.5)
+    plt.legend()
+    plt.title(f"E = {initial_energy} MeV, angle = {angle} deg, latpos = {latpos['x']}")
+    plt.colorbar(protondose_img, label=f'proton beam dose (Gy)')
+
+    plt.show()
+
+
+
 
 if __name__ == '__main__':
     # #=====================================Week1===============================
@@ -1533,7 +1729,7 @@ if __name__ == '__main__':
     #Generate data and solve for 100MeV
     # calculate_and_plot_residual_e_and_de_dz_with_and_without_range_straggling(energies_to_test=[50,100,300])
 
-    #Work on summary
+    # Work on summary
     # 0/ introduction
     # 1. energy fluence
     # 2. Classical bethe bloch
@@ -1552,6 +1748,6 @@ if __name__ == '__main__':
         protondosesfolder_path=str(project_root_provider()) + r'.\utils\data\protondosedata',
         initial_energy=87.7,  # MeV
         angle=60,
-        latpos={'x':30,'y':0},
+        latpos={'x':40,'y':0},
         voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
     )
