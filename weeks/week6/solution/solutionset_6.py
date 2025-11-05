@@ -1467,6 +1467,7 @@ def calculate_proton_pencil_beam_dose(angle, init_energy, latpos, raddepth, tp_p
 
             # Look up beam parameters at this raddepth
             # Find the closest tabulated depth value in our proton dose Monte Carlo data
+            # Could also perfom interpolation
             depth_idx = np.argmin(np.abs(depth_mm - zrad))
 
             # Retrieve D0 and sigma at this depth from lookup table
@@ -1743,6 +1744,7 @@ if __name__ == '__main__':
     # Proton pencil beam dose in patient
     # Available proton dose data files can be found in the utils\data\protondosedata folder
 
+    # Example of Noemi
     show_proton_pencil_beam_dose_on_ct(
         tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
         protondosesfolder_path=str(project_root_provider()) + r'.\utils\data\protondosedata',
@@ -1751,3 +1753,35 @@ if __name__ == '__main__':
         latpos={'x':40,'y':0},
         voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
     )
+
+    # Case in the heart, could represent water
+    show_proton_pencil_beam_dose_on_ct(
+        tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+        protondosesfolder_path=str(project_root_provider()) + r'.\utils\data\protondosedata',
+        initial_energy=87.7,  # MeV
+        angle=180,
+        latpos={'x':-60,'y':0},
+        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
+    )
+
+    # Case through the lung
+    show_proton_pencil_beam_dose_on_ct(
+        tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+        protondosesfolder_path=str(project_root_provider()) + r'.\utils\data\protondosedata',
+        initial_energy=87.7,  # MeV
+        angle=180,
+        latpos={'x':20,'y':0},
+        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
+    )
+
+    # Beam through rib air tissue interface
+    show_proton_pencil_beam_dose_on_ct(
+        tp_plan_path=str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+        protondosesfolder_path=str(project_root_provider()) + r'.\utils\data\protondosedata',
+        initial_energy=87.7,  # MeV
+        angle=90,
+        latpos={'x':-9,'y':0},
+        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
+    )
+
+    # #=====================================Week7===============================
