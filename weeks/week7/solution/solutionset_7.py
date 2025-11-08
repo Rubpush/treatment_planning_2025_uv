@@ -1636,6 +1636,8 @@ def show_proton_pencil_beam_dose_on_ct(
 
 # #=====================================Week7===============================
 
+# New calculate pencil beam dose implementation for photons
+
 
 def get_equispaced_full_rot_angles(number_of_angles:int=9)->List[float]:
     """Get list of angles by deviding 360 by number of angles and then multiplying
@@ -1644,9 +1646,11 @@ def get_equispaced_full_rot_angles(number_of_angles:int=9)->List[float]:
     return [division_angle*x for x in range(number_of_angles)]
 
 def create_beams(angles: List[float], tp_plan_path:str =str(project_root_provider()) + r'.\utils\data\patientdata.mat',
-                 beamletdose_path: str = str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',) -> Dict[str, any]:
+                 beamletdose_path: str = str(project_root_provider()) + r'.\utils\data\photondosedata\beamletdose5mm.mat',
+                 show_beams = False) -> Dict[str, any]:
     # prepare beams container
     beams = {}
+    beamlet_positions = [-12,-10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10,12]
 
     # Get CT data.
     tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
@@ -1672,23 +1676,94 @@ def create_beams(angles: List[float], tp_plan_path:str =str(project_root_provide
         # Get Raddepth matrix from ct for angle, boxelsize and stepsize
         raddepth = calculate_raddepth(ct_scan=tp_plan_obj.ct, isocenter=isocenter,
                                          pixel_size=tp_plan_obj.voxelsize, step_size=0.2, angle=angle)
+        pb = {}
 
         # Get pencil beam dose
-        pb1 = calculate_pencil_beam_dose(beamlet_dose_on_ct_grid, 90,
-                                        -10, isocenter, raddepth,
-                                        voxelsize=tp_plan_obj.voxelsize)
-        pb2 = calculate_pencil_beam_dose(beamlet_dose_on_ct_grid, 90,
-                                        -7, isocenter, raddepth,
-                                        voxelsize=tp_plan_obj.voxelsize)
-        plt.imshow(tp_plan_obj.ct, origin='lower', cmap='grey')
-        plt.imshow(pb1.get('dose'),origin='lower', cmap='jet',alpha=0.5)
-        plt.imshow(pb2.get('dose'),origin='lower', cmap='jet',alpha=0.5)
+        for beamletpos in beamlet_positions:
+            pb_instance = calculate_pencil_beam_dose(beamlet_dose_on_ct_grid, angle,
+                                            beamletpos, isocenter, raddepth,
+                                            voxelsize=tp_plan_obj.voxelsize)
+            pb_key = f'beamlet_latpos{beamletpos}'
+            pb[pb_key] = pb_instance
+
+        beams[f'{beamNo}'] = {'angle': angle, 'nBeamlets': len(beamlet_positions), 'beamletpos': beamlet_positions, 'raddepth': raddepth, 'pb': pb}
+
+    if show_beams:
+        # Plot CT once
+        plt.imshow(tp_plan_obj.ct, origin='lower', cmap='gray')
+
+        # Combine all dose arrays before plotting
+        dose_sum = np.zeros_like(tp_plan_obj.ct, dtype=float)
+        for beam in beams:
+            pb = beams[beam]['pb']
+            beamlet_positions = beams[beam]['beamletpos']
+            for beamletpos in beamlet_positions:
+                pb_key = f'beamlet_latpos{beamletpos}'
+                pb_instance = pb[pb_key]
+                dose_sum += pb_instance.get('dose')
+
+        # Plot combined dose once
+        plt.imshow(dose_sum, origin='lower', cmap='jet', alpha=0.5)
+        plt.colorbar(label='Total dose (Gy)')
+
         plt.show()
+    return beams
 
-        beams[f'{beamNo}'] = {'angle': angle, 'nBeamlets': len(bemletpos), 'beamletpos': beamletpos, 'raddepth': raddepth, 'pb': pb}
+def create_dij_matrix(beams: Dict[str, any]) -> np.ndarray:
+    """Create D_ij matrix from beams dictionary and treatment plan object"""
+    # Get size of the dose arrays
+    nVoxels = beams['1']['pb'][list(beams['1']['pb'])[0]]['dose'].size
+    nBeams = len(beams)
+    nBeamletsPerBeam = beams['1']['nBeamlets']  # Assuming all beams have same number of beamlets
+    nTotalBeamlets = nBeams * nBeamletsPerBeam
 
+    # Initialize D_ij matrix
+    Dij = np.zeros((nVoxels, nTotalBeamlets))
 
-    return
+    beamletIndex = 0
+    for beam in beams:
+        pb = beams[beam]['pb']
+        beamlet_positions = beams[beam]['beamletpos']
+        for beamletpos in beamlet_positions:
+            pb_key = f'beamlet_latpos{beamletpos}'
+            pb_instance = pb[pb_key]
+            # dose_array = pb_instance.get('dose').flatten()  # Flatten to 1D array
+            dose_array = numpy.reshape(pb_instance.get('dose'), nVoxels)  # Flatten to 1D array
+
+            # Fill corresponding column in D_ij matrix
+            Dij[:, beamletIndex] = dose_array
+            beamletIndex += 1
+
+    # Create uniform fluence vector (1 for each beamlet)
+    uniform_fluence_vector = np.ones((nTotalBeamlets, 1))
+    return Dij, uniform_fluence_vector
+
+def get_dose_from_dijs_and_fluence_vector(dij_matrix: np.ndarray, fluence_vector: np.ndarray) -> np.ndarray:
+    """Calculate dose distribution from D_ij matrix and fluence vector"""
+    # Matrix multiplication to get dose distribution
+    dose_array = np.dot(dij_matrix, fluence_vector)
+
+    return dose_array
+
+def plot_dij_matrix_on_ct(dij_matrix_dose, show_plot:bool=True,
+                          tp_plan_path:str =str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+                          plot_note:str = ''):
+    """Plot a specific column of D_ij matrix on CT"""
+    # Get CT data.
+    tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
+                                            show_plot=False,
+                                            voinames_colors_visualization=[('tumor','green')])
+
+    dose_sum = dij_matrix_dose.reshape(tp_plan_obj.ct.shape)
+
+    # Visualize dose distribution on CT
+    ct_img = plt.imshow(tp_plan_obj.ct, origin='lower', cmap='grey')
+    dose_img = plt.imshow(dose_sum, origin='lower', cmap='jet', alpha=0.5)
+    plt.title(f'Dose on CT: {plot_note}')
+    plt.colorbar(dose_img, label='Dose (Gy)')
+
+    if show_plot:
+        plt.show()
 
 
 if __name__ == '__main__':
@@ -1847,6 +1922,50 @@ if __name__ == '__main__':
     # )
 
     # #=====================================Week7===============================
-    # # Get a list of equispaced beam angles, use an uneven number
-    angles = get_equispaced_full_rot_angles(3)
-    create_beams(angles)
+    # # Get a list of equispaced beam angles, use an uneven number to avoid symmetry
+    angles = get_equispaced_full_rot_angles(9)
+    # Use the angles to get the beams with beamlets and beamlet positions (lateral offsets)
+    beams = create_beams(angles)
+    # Create dose influence matrix for all beams and beamlets
+    dij_matrix, uniform_fluence_vector = create_dij_matrix(beams)
+
+    # Calculate dose distribution for uniform fluence
+    scaled_dij_matrix = get_dose_from_dijs_and_fluence_vector(dij_matrix, uniform_fluence_vector)
+    # Plot dose distribution for uniform fluence
+    plot_dij_matrix_on_ct(scaled_dij_matrix, plot_note='Uniform fluence')
+
+    # Plot dose distribution for specific beamlet indices to find beamlet of each angle hitting spinal cord
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=7)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=20)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=33)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=46)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=57)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=58)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=70)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=83)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=96)
+    # plot_dij_matrix_on_ct(dij_matrix,beamlet_index=110)
+
+    # Create modified fluence vector to spare spinal cord
+    uniform_fluence_vector_edit = uniform_fluence_vector.copy()
+    # Zero out beamlets that hit spinal cord (based on previous plots)
+    beamlets_fluence_to_zero = [7,20,33,46,57,58,70,83,96,110]
+    for beamlet in beamlets_fluence_to_zero:
+        uniform_fluence_vector_edit[beamlet] = 0.0
+    # Calculate dose distribution for modified fluence
+    scaled_dij_matrix_simple_edit = get_dose_from_dijs_and_fluence_vector(dij_matrix, uniform_fluence_vector_edit)
+    # Plot dose distribution for modified fluence
+    plot_dij_matrix_on_ct(scaled_dij_matrix_simple_edit, plot_note='Spare spine')
+
+
+
+
+
+
+
+
+
+
+
+
+
