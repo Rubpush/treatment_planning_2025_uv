@@ -1768,10 +1768,14 @@ def plot_dij_matrix_on_ct(dij_matrix_dose, show_plot:bool=True,
 def get_vois_dij_format(tplan_obj, dij_matrix) -> Dict[str,np.array]:
     voinames_in_dij_format = {}
     voinumbers = get_voinames_number(tplan_obj.voinames)
-    voi_in_dij_format = tplan_obj.voi.reshape(dij_matrix)
-    for voi_name in voinumbers:
-        voinames_in_dij_format[f'{voi_name}'] = {}
-        voinames_in_dij_format[f'{voi_name}']['1d_mask'] = voi_in_dij_format == voinumbers.get('normal tissue')
+
+    # Flatten VOI matrix to match dij_matrix shape
+    voi_in_dij_format = tplan_obj.voi.reshape(-1)
+
+    for voi_name, voi_number in voinumbers.items():
+        # Create boolean mask for this VOI
+        if not voinames_in_dij_format.get(f'{voi_name}'): voinames_in_dij_format[voi_name] = {}
+        voinames_in_dij_format[voi_name]['1d_mask'] = (voi_in_dij_format == voi_number)
 
     return voinames_in_dij_format
 
