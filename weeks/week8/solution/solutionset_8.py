@@ -1787,50 +1787,50 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
         {
             "name": "normal tissue",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('normal tissue')),
-            "maxdose": 50,
-            "overdosepenalty": 1,
+            "maxdose": 20,
+            "overdosepenalty": 7,
             "mindose": 0,
-            "underdosepentaly": 0,
+            "underdosepenalty": 0,
         },
         {
             "name": "right lung",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('right lung')),
-            "maxdose": 50,
-            "overdosepenalty": 2,
+            "maxdose": 10,
+            "overdosepenalty": 10,
             "mindose": 0,
-            "underdosepentaly": 0,
+            "underdosepenalty": 0,
         },
         {
             "name": "left lung",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('left lung')),
-            "maxdose": 50,
-            "overdosepenalty": 2,
+            "maxdose": 10,
+            "overdosepenalty": 10,
             "mindose": 0,
-            "underdosepentaly": 0,
+            "underdosepenalty": 0,
         },
         {
             "name": "spinal cord",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('spinal cord')),
-            "maxdose": 25,
-            "overdosepenalty": 20,
+            "maxdose": 10,
+            "overdosepenalty": 40,
             "mindose": 0,
-            "underdosepentaly": 0,
+            "underdosepenalty": 0,
         },
         {
             "name": "esophagus",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('esophagus')),
-            "maxdose": 30,
+            "maxdose": 10,
             "overdosepenalty": 10,
             "mindose": 0,
-            "underdosepentaly": 0,
+            "underdosepenalty": 0,
         },
         {
             "name": "tumor",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('tumor')),
-            "maxdose": 100,
-            "overdosepenalty": 0,
-            "mindose": 50,
-            "underdosepentaly": 5,
+            "maxdose": 50,
+            "overdosepenalty": 1,
+            "mindose": 35,
+            "underdosepenalty": 25,
         }
     ]
     }
@@ -1838,31 +1838,155 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
     return TPopt
 
 
-def objective_quadratic_penalty_function(doses_in_voxels, TPopt: Dict, voiname: str):
-    """For a given voi, calculate the quadratic penalty function"""
-    objective = 0
+def calculate_quadratic_objective(bixelweights: np.ndarray, TPopt: Dict, dij_matrix:np.ndarray, voiname:str = ''):
+    """
+    Calculate the quadratic objective function for IMRT optimization.
 
-    # for dose_in_i in voxels_of_voi:
-    #     if dose_in_i= > maxdose:
-    #     elif dose_in_i <= mindose:
-    #     else:
-    #         print(f"there is probably something wrong, voiname: {voiname} dosevalue :{dose_in_i}")
+    The objective function is:
+    f(d) = Σ w^o_i * (d_i - D^max_i)²_+ + Σ w^u_i * (D^min_i - d_i)²_+
 
-def calculate_quadratic_objective(bixelweights) -> float:
-    implementation = 'implementation'
-    return 0.0
+    The first term penalizes doses that exceed max dose, the second term penalizes doses below min dose
 
-def calculate_quadratic_objective_gradient(bixelweights):
-    implementation = 'implementation'
-    return 0.0
+    Params:
+    -----------
+    bixelweights : Vector of beamlet intensities (bixel weights)
+    TPopt : Dictionary containing optimization parameters
+
+    Return:
+    --------
+    objective_value : The value of the quadratic objective function
+    """
+
+    # Calculate dose vector: d = A * w
+    # where A is the dose matrix and w is the bixel weights
+    dose = dij_matrix @ bixelweights
+
+    # use boolean mask in TPopt, to filter only the relevant voxels for the objective value
+    mask = None
+    for voi in TPopt['vois']:
+        if voi['name'] == voiname:
+            mask, maxdose, overdosepenalty, mindose, underdosepenalty = voi['1d_mask'], voi['maxdose'], voi['overdosepenalty'], voi['mindose'], voi['underdosepenalty']
+            break
+    if mask.any() == None:
+        print('An error has occurred getting the voi mask for the objective function')
+    voi_dose = dose[mask]
+
+    # Calculate overdose term: w^o_i * (d_i - D^max_i)²_+
+    # Only penalize when dose exceeds maximum (positive part)
+    overdose_diff = voi_dose - maxdose
+    overdose_term = overdosepenalty * np.maximum(0, overdose_diff) ** 2
+
+    # Calculate underdose term: w^u_i * (D^min_i - d_i)²_+
+    # Only penalize when dose is below minimum (positive part)
+    underdose_diff = mindose - voi_dose
+    underdose_term = underdosepenalty * np.maximum(0, underdose_diff) ** 2
+
+    # Sum all penalty terms
+    voi_objective_value = np.sum(overdose_term) + np.sum(underdose_term)
+
+    return voi_objective_value
+
+
+def calculate_quadratic_objective_gradient(bixelweights: np.ndarray, TPopt: Dict,
+                                           dij_matrix: np.ndarray, voiname: str = ''):
+    """Calculate gradient of f for gradient descent optimization."""
+
+    # Calculate dose vector: d = A * w
+    # where A is the dose matrix and w is the bixel weights
+    dose = dij_matrix @ bixelweights
+
+    # use boolean mask in TPopt, to filter only the relevant voxels for the objective value
+    voi_found = None
+    for voi in TPopt['vois']:
+        if voi['name'] == voiname:
+            voi_found = voi
+            break
+    if voi_found is None:
+        raise ValueError(f"VOI '{voiname}' not found")
+
+    mask = voi_found['1d_mask']
+    maxdose = voi_found['maxdose']
+    overdosepenalty = voi_found['overdosepenalty']
+    mindose = voi_found['mindose']
+    underdosepenalty = voi_found['underdosepenalty']
+
+    voi_dose = dose[mask]
+
+    # Calculate gradient w.r.t. dose (∂f/∂d)
+    # Initialize with zeros (gradient is zero where constraints aren't violated)
+    dose_gradient = np.zeros_like(dose)
+
+    # Overdose component: 2·wᵒ·(d - Dᵐᵃˣ) when d > Dᵐᵃˣ
+    # The mask (overdose_diff > 0) implements the positive part function (·)₊
+    overdose_diff = voi_dose - maxdose
+    overdose_mask = overdose_diff > 0  # Only where dose exceeds max
+    overdose_gradient = overdosepenalty * overdose_diff * overdose_mask
+
+    # Underdose component: -2·wᵘ·(Dᵐⁱⁿ - d) when d < Dᵐⁱⁿ
+    # Note the negative sign! Gradient points toward increasing dose
+    underdose_diff = mindose - voi_dose
+    underdose_mask = underdose_diff > 0  # Only where dose below min
+    underdose_gradient = -underdosepenalty * underdose_diff * underdose_mask
+
+    # Combine contributions (only for voxels in this VOI)
+    dose_gradient[mask] = overdose_gradient + underdose_gradient
+
+    # Backpropagate through dose matrix using chain rule
+    # ∇f = (∂f/∂d)·(∂d/∂w) = dose_gradient · Aᵀ
+    # The factor of 2 comes from the derivative of x²
+    gradient = 2 * dij_matrix.T @ dose_gradient
+
+    return gradient
 
 def optimize_fluence_for_objectives(dij_matrix: np.array, fluence_matrix: np.array,
-                                    objectives: Dict, method:str = 'gradient_descent'):
+                                    objectives: Dict, method:str = 'simple_gradient_descent', iterations:int=100,
+                                    step_size:float=0.0001):
+
+    print(f'Optimizing dose with {method}')
 
 
+    # initialize fluence matrix to zeros
+    fluence_matrix[:] = 0
+    all_iterations = {}
+    print_info = (iterations)/3
 
 
-    return optimized_fluence_matrix
+    for i in range(iterations):
+        if i % round(print_info)==0 and i != 0:
+            prev_i = i-1
+            print("=" * 70)
+            print(f'At iteration {i}/{iterations} in objective optimization.')
+            print(f'Total objective value: {all_iterations[f"{prev_i}"]["combined_obj_val"]}')
+            print(f'Total gradient values: {all_iterations[f"{prev_i}"]["combined_gradient"]}')
+            print(f'Last individual objective values: {all_iterations[f"{prev_i}"]["obj_vals"]}')
+        # Initialize values as empty or zeros
+        obj_values = []
+        total_objective = 0.0
+        total_gradient = np.zeros(len(fluence_matrix))
+
+        # For each voi
+        for voi in objectives['vois']:
+            # Get quadratic objective value
+            voi_quadr_objective_value = calculate_quadratic_objective(fluence_matrix, objectives, dij_matrix, voi['name'])
+            # Get beam gradient values
+            voi_quadr_objective_gradient = calculate_quadratic_objective_gradient(fluence_matrix, objectives, dij_matrix, voi['name'])
+            # Collapse into a single objective metric for all vois
+            total_objective += voi_quadr_objective_value
+            # Collapse into a single gradient metric for all vois
+            total_gradient += voi_quadr_objective_gradient.flatten()
+            # Track data
+            voi_objective_params = {'name' :voi['name'], 'obj_value':voi_quadr_objective_value, 'obj_gradient': voi_quadr_objective_gradient}
+            obj_values.append(voi_objective_params)
+        all_iterations[f'{i}'] = {'obj_vals':obj_values,'combined_obj_val':total_objective,'combined_gradient':total_gradient}
+
+        # Update fluence using gradient descent
+        # w_new = w_old - α * gradient of f
+        fluence_matrix = fluence_matrix.flatten() - step_size * total_gradient.flatten()
+
+        # Fluence weights cannot be negative (we cannot suck up dose :))
+        fluence_matrix = np.maximum(0, fluence_matrix)
+
+    return fluence_matrix
 
 
 if __name__ == '__main__':
@@ -2072,7 +2196,8 @@ if __name__ == '__main__':
 
 
 # # Get a list of equispaced beam angles, use an uneven number to avoid symmetry
-    angles = get_equispaced_full_rot_angles(3)
+    nbeams = 9
+    angles = get_equispaced_full_rot_angles(nbeams)
     # Use the angles to get the beams with beamlets and beamlet positions (lateral offsets)
     beams = create_beams(angles)
     # Create dose influence matrix for all beams and beamlets
@@ -2080,19 +2205,23 @@ if __name__ == '__main__':
 
     # Calculate dose distribution for uniform fluence
     scaled_dij_matrix = get_dose_from_dijs_and_fluence_vector(dij_matrix, uniform_fluence_vector)
-    # Plot dose distribution for uniform fluence
-    plot_dij_matrix_on_ct(scaled_dij_matrix, plot_note='Uniform fluence', voinames_colors_visualization=None)
 
     # Get the voi masks in the di matrix format
     vois_in_dij_format = get_vois_dij_format(tplan_obj,scaled_dij_matrix)
 
-    # Optimize for plan objectives
+    # Add vois in dij format to tpopt_objectives
+    for count, voi in enumerate(TPopt_objectives['vois']):
+        dij_format_vois = vois_in_dij_format[f"{voi['name']}"]['1d_mask']
+        TPopt_objectives['vois'][count]['1d_mask'] = dij_format_vois
 
+    # Optimize for plan objective
+    opti_fluence = optimize_fluence_for_objectives(dij_matrix=dij_matrix,fluence_matrix=uniform_fluence_vector,objectives=TPopt_objectives )
 
-    dose = get_dose_from_dijs_and_fluence_vector(dij_matrix, uniform_fluence_vector)
+    # Get dose for fluences
+    dose = get_dose_from_dijs_and_fluence_vector(dij_matrix, opti_fluence)
 
-
-    print ('checkie')
+    # Plot dose on ct
+    plot_dij_matrix_on_ct(dose, plot_note=f'Optimized fluence, Nbeam angles: {nbeams}', voinames_colors_visualization=None)
 
 
 
