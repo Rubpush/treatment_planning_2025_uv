@@ -237,7 +237,7 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
         plt.title(plot_title)
 
         plt.show()
-        return None
+        return None, None
     else:
         return tp_plan_obj, ct_img
 
@@ -1655,7 +1655,7 @@ def create_beams(angles: List[float], tp_plan_path:str =str(project_root_provide
     # Get CT data.
     tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
                                             show_plot=False,
-                                            voinames_colors_visualization=[('tumor','green')])
+                                            voinames_colors_visualization=None)
 
     # Get beamlet data
     beamletdose_obj, beamlet_img = visualize_beamletdose_data(beamletdose_path=beamletdose_path,
@@ -1747,12 +1747,12 @@ def get_dose_from_dijs_and_fluence_vector(dij_matrix: np.ndarray, fluence_vector
 
 def plot_dij_matrix_on_ct(dij_matrix_dose, show_plot:bool=True,
                           tp_plan_path:str =str(project_root_provider()) + r'.\utils\data\patientdata.mat',
-                          plot_note:str = ''):
+                          plot_note:str = '', voinames_colors_visualization=[('tumor','green')]):
     """Plot a specific column of D_ij matrix on CT"""
     # Get CT data.
     tp_plan_obj, _ = visualize_tp_plan_data(tp_plan_path=tp_plan_path,
                                             show_plot=False,
-                                            voinames_colors_visualization=[('tumor','green')])
+                                            voinames_colors_visualization=voinames_colors_visualization)
 
     dose_sum = dij_matrix_dose.reshape(tp_plan_obj.ct.shape)
 
@@ -1764,6 +1764,101 @@ def plot_dij_matrix_on_ct(dij_matrix_dose, show_plot:bool=True,
 
     if show_plot:
         plt.show()
+
+def get_vois_dij_format(tplan_obj, dij_matrix) -> Dict[str,np.array]:
+    voinames_in_dij_format = {}
+    voinumbers = get_voinames_number(tplan_obj.voinames)
+    voi_in_dij_format = tplan_obj.voi.reshape(dij_matrix)
+    for voi_name in voinumbers:
+        voinames_in_dij_format[f'{voi_name}'] = {}
+        voinames_in_dij_format[f'{voi_name}']['1d_mask'] = voi_in_dij_format == voinumbers.get('normal tissue')
+
+    return voinames_in_dij_format
+
+
+
+
+def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
+    TPopt = {"vois": [
+        {
+            "name": "normal tissue",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('normal tissue')),
+            "maxdose": 50,
+            "overdosepenalty": 1,
+            "mindose": 0,
+            "underdosepentaly": 0,
+        },
+        {
+            "name": "right lung",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('right lung')),
+            "maxdose": 50,
+            "overdosepenalty": 2,
+            "mindose": 0,
+            "underdosepentaly": 0,
+        },
+        {
+            "name": "left lung",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('left lung')),
+            "maxdose": 50,
+            "overdosepenalty": 2,
+            "mindose": 0,
+            "underdosepentaly": 0,
+        },
+        {
+            "name": "spinal cord",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('spinal cord')),
+            "maxdose": 25,
+            "overdosepenalty": 20,
+            "mindose": 0,
+            "underdosepentaly": 0,
+        },
+        {
+            "name": "esophagus",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('esophagus')),
+            "maxdose": 30,
+            "overdosepenalty": 10,
+            "mindose": 0,
+            "underdosepentaly": 0,
+        },
+        {
+            "name": "tumor",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('tumor')),
+            "maxdose": 100,
+            "overdosepenalty": 0,
+            "mindose": 50,
+            "underdosepentaly": 5,
+        }
+    ]
+    }
+
+    return TPopt
+
+
+def objective_quadratic_penalty_function(doses_in_voxels, TPopt: Dict, voiname: str):
+    """For a given voi, calculate the quadratic penalty function"""
+    objective = 0
+
+    # for dose_in_i in voxels_of_voi:
+    #     if dose_in_i= > maxdose:
+    #     elif dose_in_i <= mindose:
+    #     else:
+    #         print(f"there is probably something wrong, voiname: {voiname} dosevalue :{dose_in_i}")
+
+def calculate_quadratic_objective(bixelweights) -> float:
+    implementation = 'implementation'
+    return 0.0
+
+def calculate_quadratic_objective_gradient(bixelweights):
+    implementation = 'implementation'
+    return 0.0
+
+def optimize_fluence_for_objectives(dij_matrix: np.array, fluence_matrix: np.array,
+                                    objectives: Dict, method:str = 'gradient_descent'):
+
+
+
+
+    return optimized_fluence_matrix
 
 
 if __name__ == '__main__':
@@ -1959,64 +2054,43 @@ if __name__ == '__main__':
 
     # #=====================================Week8===============================
 
+    # Still need to fix photon interpolation implementation creating
+    # low resolution dose distribution with 'holes' after rotation
+
     tplan_obj, _ = visualize_tp_plan_data(
         tp_plan_path=Path(str(project_root_provider()) + r'.\utils\data\patientdata.mat'),
-        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','blue')],
+        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
         show_plot=False)
 
     voinumbers = get_voinames_number(tplan_obj.voinames)
 
-    TPopt ={ "vois": [
-        {
-            "name": "normal tissue",
-            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('normal tissue')),
-            "maxdose": 50,
-            "overdosepenalty": 1,
-            "mindose": 0,
-            "underdosepentaly":0,
-        },
-        {
-            "name": "right lung",
-            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('right lung')),
-            "maxdose": 50,
-            "overdosepenalty": 2,
-            "mindose": 0,
-            "underdosepentaly": 0,
-        },
-        {
-            "name": "left lung",
-            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('left lung')),
-            "maxdose": 50,
-            "overdosepenalty": 2,
-            "mindose": 0,
-            "underdosepentaly": 0,
-        },
-        {
-            "name": "spinal cord",
-            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('spinal cord')),
-            "maxdose": 25,
-            "overdosepenalty": 20,
-            "mindose": 0,
-            "underdosepentaly": 0,
-        },
-        {
-            "name": "esophagus",
-            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('esophagus')),
-            "maxdose": 30,
-            "overdosepenalty": 10,
-            "mindose": 0,
-            "underdosepentaly": 0,
-        },
-        {
-            "name": "tumor",
-            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('tumor')),
-            "maxdose": 100,
-            "overdosepenalty": 0,
-            "mindose": 50,
-            "underdosepentaly": 5,
-        }
-    ]
-    }
+    TPopt_objectives = define_plan_objectives(tplan_obj, voinumbers)
+
+
+# # Get a list of equispaced beam angles, use an uneven number to avoid symmetry
+    angles = get_equispaced_full_rot_angles(3)
+    # Use the angles to get the beams with beamlets and beamlet positions (lateral offsets)
+    beams = create_beams(angles)
+    # Create dose influence matrix for all beams and beamlets
+    dij_matrix, uniform_fluence_vector = create_dij_matrix(beams)
+
+    # Calculate dose distribution for uniform fluence
+    scaled_dij_matrix = get_dose_from_dijs_and_fluence_vector(dij_matrix, uniform_fluence_vector)
+    # Plot dose distribution for uniform fluence
+    plot_dij_matrix_on_ct(scaled_dij_matrix, plot_note='Uniform fluence', voinames_colors_visualization=None)
+
+    # Get the voi masks in the di matrix format
+    vois_in_dij_format = get_vois_dij_format(tplan_obj,scaled_dij_matrix)
+
+    # Optimize for plan objectives
+
+
+    dose = get_dose_from_dijs_and_fluence_vector(dij_matrix, uniform_fluence_vector)
+
+
+    print ('checkie')
+
+
 
 
 
