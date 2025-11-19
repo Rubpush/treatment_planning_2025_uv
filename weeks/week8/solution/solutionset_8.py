@@ -1871,6 +1871,9 @@ def calculate_quadratic_objective(bixelweights: np.ndarray, TPopt: Dict, dij_mat
         print('An error has occurred getting the voi mask for the objective function')
     voi_dose = dose[mask]
 
+    # Normalize by num voxels in voi
+    overdosepenalty, underdosepenalty = overdosepenalty/voi['nVoxels'], underdosepenalty/voi['nVoxels']
+
     # Calculate overdose term: w^o_i * (d_i - D^max_i)²_+
     # Only penalize when dose exceeds maximum (positive part)
     overdose_diff = voi_dose - maxdose
@@ -1911,6 +1914,9 @@ def calculate_quadratic_objective_gradient(bixelweights: np.ndarray, TPopt: Dict
     underdosepenalty = voi_found['underdosepenalty']
 
     voi_dose = dose[mask]
+
+    # Normalize by num voxels in voi
+    overdosepenalty, underdosepenalty = overdosepenalty/voi_found['nVoxels'], underdosepenalty/voi_found['nVoxels']
 
     # Calculate gradient w.r.t. dose (∂f/∂d)
     # Initialize with zeros (gradient is zero where constraints aren't violated)
