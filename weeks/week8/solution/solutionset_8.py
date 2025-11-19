@@ -220,8 +220,7 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
     # Link the names of the vois to the voi fields coding numbers (luckily related to the order of the names)
     voinames_numbered_dict = get_voinames_number(tp_plan_obj.voinames)
 
-    # Plot the ct imaging data
-    ct_img = plt.imshow(tp_plan_obj.ct,  cmap='grey', origin='lower')
+
 
     # Plot the contour data if
     if voinames_colors_visualization:
@@ -234,12 +233,15 @@ def visualize_tp_plan_data(tp_plan_path: Union[Path | str], voinames_colors_visu
     plt.legend(fontsize=8)
 
     if show_plot:
+        # Plot the ct imaging data
+        ct_img = plt.imshow(tp_plan_obj.ct, cmap='grey', origin='lower')
+
         plt.title(plot_title)
 
         plt.show()
-        return None, None
+        return None, ct_img
     else:
-        return tp_plan_obj, ct_img
+        return tp_plan_obj, None
 
 # #=====================================Week1===============================
 
@@ -638,16 +640,17 @@ def visualize_beamletdose_data(beamletdose_path: Union[Path | str],show_plot:boo
     # Get TPlan object
     beamletdose_obj = load_beamletdose_data(beamletdose_path)
 
-    # Plot the ct imaging data
-    beamletdose_img = plt.imshow(beamletdose_obj.dose,  cmap='jet', origin='lower')
+
 
     if show_plot:
+        # Plot the ct imaging data
+        beamletdose_img = plt.imshow(beamletdose_obj.dose,  cmap='jet', origin='lower')
         plt.title(plot_title)
 
         plt.show()
-        return None
+        return None, beamletdose_img
     else:
-        return beamletdose_obj, beamletdose_img
+        return beamletdose_obj, None
 
 
 def interpolate_to_grid(from_img_data: np.ndarray,from_voxelsize:float = 0.5, to_img_data:np.ndarray = None, to_voxelsize:float =2.5)-> np.ndarray:
@@ -1795,7 +1798,7 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
         {
             "name": "right lung",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('right lung')),
-            "maxdose": 10,
+            "maxdose": 15,
             "overdosepenalty": 10,
             "mindose": 0,
             "underdosepenalty": 0,
@@ -1803,15 +1806,34 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
         {
             "name": "left lung",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('left lung')),
-            "maxdose": 10,
+            "maxdose": 15,
             "overdosepenalty": 10,
             "mindose": 0,
-            "underdosepenalty": 0,
+            "underdosepenalty": 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            ,
         },
         {
             "name": "spinal cord",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('spinal cord')),
-            "maxdose": 10,
+            "maxdose": 15,
             "overdosepenalty": 40,
             "mindose": 0,
             "underdosepenalty": 0,
@@ -1819,7 +1841,7 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
         {
             "name": "esophagus",
             "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('esophagus')),
-            "maxdose": 10,
+            "maxdose": 15,
             "overdosepenalty": 10,
             "mindose": 0,
             "underdosepenalty": 0,
@@ -1830,13 +1852,24 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
             "maxdose": 50,
             "overdosepenalty": 1,
             "mindose": 35,
-            "underdosepenalty": 25,
+            "underdosepenalty": 40,
         }
     ]
     }
 
     return TPopt
 
+
+def get_voi_variables_and_dose_for_objectives(dose, TPopt, voiname):
+    mask = None
+    for voi in TPopt['vois']:
+        if voi['name'] == voiname:
+            mask, maxdose, overdosepenalty, mindose, underdosepenalty, nvoxels = voi['1d_mask'], voi['maxdose'], voi['overdosepenalty'], voi['mindose'], voi['underdosepenalty'], voi['nVoxels']
+            break
+    if mask.any() == None:
+        print('An error has occurred getting the voi mask for the objective function')
+    voi_dose = dose[mask]
+    return voi_dose, maxdose, overdosepenalty, mindose, underdosepenalty, nvoxels, mask
 
 def calculate_quadratic_objective(bixelweights: np.ndarray, TPopt: Dict, dij_matrix:np.ndarray, voiname:str = ''):
     """
@@ -1862,17 +1895,10 @@ def calculate_quadratic_objective(bixelweights: np.ndarray, TPopt: Dict, dij_mat
     dose = dij_matrix @ bixelweights
 
     # use boolean mask in TPopt, to filter only the relevant voxels for the objective value
-    mask = None
-    for voi in TPopt['vois']:
-        if voi['name'] == voiname:
-            mask, maxdose, overdosepenalty, mindose, underdosepenalty = voi['1d_mask'], voi['maxdose'], voi['overdosepenalty'], voi['mindose'], voi['underdosepenalty']
-            break
-    if mask.any() == None:
-        print('An error has occurred getting the voi mask for the objective function')
-    voi_dose = dose[mask]
+    voi_dose, maxdose, overdosepenalty, mindose, underdosepenalty,nvoxels,_ = get_voi_variables_and_dose_for_objectives(dose, TPopt, voiname)
 
     # Normalize by num voxels in voi
-    overdosepenalty, underdosepenalty = overdosepenalty/voi['nVoxels'], underdosepenalty/voi['nVoxels']
+    overdosepenalty, underdosepenalty = overdosepenalty/nvoxels, underdosepenalty/nvoxels
 
     # Calculate overdose term: w^o_i * (d_i - D^max_i)²_+
     # Only penalize when dose exceeds maximum (positive part)
@@ -1899,24 +1925,11 @@ def calculate_quadratic_objective_gradient(bixelweights: np.ndarray, TPopt: Dict
     dose = dij_matrix @ bixelweights
 
     # use boolean mask in TPopt, to filter only the relevant voxels for the objective value
-    voi_found = None
-    for voi in TPopt['vois']:
-        if voi['name'] == voiname:
-            voi_found = voi
-            break
-    if voi_found is None:
-        raise ValueError(f"VOI '{voiname}' not found")
+    voi_dose, maxdose, overdosepenalty, mindose, underdosepenalty, nvoxels, mask = get_voi_variables_and_dose_for_objectives(dose, TPopt, voiname)
 
-    mask = voi_found['1d_mask']
-    maxdose = voi_found['maxdose']
-    overdosepenalty = voi_found['overdosepenalty']
-    mindose = voi_found['mindose']
-    underdosepenalty = voi_found['underdosepenalty']
-
-    voi_dose = dose[mask]
 
     # Normalize by num voxels in voi
-    overdosepenalty, underdosepenalty = overdosepenalty/voi_found['nVoxels'], underdosepenalty/voi_found['nVoxels']
+    overdosepenalty, underdosepenalty = overdosepenalty/nvoxels, underdosepenalty/nvoxels
 
     # Calculate gradient w.r.t. dose (∂f/∂d)
     # Initialize with zeros (gradient is zero where constraints aren't violated)
@@ -1945,10 +1958,10 @@ def calculate_quadratic_objective_gradient(bixelweights: np.ndarray, TPopt: Dict
     return gradient
 
 def optimize_fluence_for_objectives(dij_matrix: np.array, fluence_matrix: np.array,
-                                    objectives: Dict, method:str = 'simple_gradient_descent', iterations:int=100,
-                                    step_size:float=0.0001):
+                                    objectives: Dict, method:str = 'simple_gradient_descent', iterations:int=1000,
+                                    step_size:float=0.0005):
 
-    print(f'Optimizing dose with {method}')
+    print(f'Optimizing dose with {method}. Chosen iterations: {iterations} with stepsize: {step_size}')
 
 
     # initialize fluence matrix to zeros
@@ -1992,7 +2005,28 @@ def optimize_fluence_for_objectives(dij_matrix: np.array, fluence_matrix: np.arr
         # Fluence weights cannot be negative (we cannot suck up dose :))
         fluence_matrix = np.maximum(0, fluence_matrix)
 
-    return fluence_matrix
+    return fluence_matrix, all_iterations
+
+def plot_opti_history(opti_logs):
+    t = 0
+    t_list=[]
+    y_list=[]
+    for log in opti_logs:
+        y = opti_logs[f'{log}']['combined_obj_val']
+        t+=1
+        y_list.append(y)
+        t_list.append(t)
+
+
+    fig,(plt1,plt2) = plt.subplots(1,2)
+    fig.suptitle("objective values vs iterations")
+    fig.supylabel('objective value')
+    fig.supxlabel('iterations')
+    plt1.plot(t_list,y_list)
+    plt2.semilogy(t_list,y_list)
+    plt.show()
+
+
 
 
 if __name__ == '__main__':
@@ -2193,7 +2227,7 @@ if __name__ == '__main__':
 
     tplan_obj, _ = visualize_tp_plan_data(
         tp_plan_path=Path(str(project_root_provider()) + r'.\utils\data\patientdata.mat'),
-        voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')],
+        voinames_colors_visualization=None,
         show_plot=False)
 
     voinumbers = get_voinames_number(tplan_obj.voinames)
@@ -2202,7 +2236,7 @@ if __name__ == '__main__':
 
 
 # # Get a list of equispaced beam angles, use an uneven number to avoid symmetry
-    nbeams = 9
+    nbeams = 7
     angles = get_equispaced_full_rot_angles(nbeams)
     # Use the angles to get the beams with beamlets and beamlet positions (lateral offsets)
     beams = create_beams(angles)
@@ -2221,13 +2255,16 @@ if __name__ == '__main__':
         TPopt_objectives['vois'][count]['1d_mask'] = dij_format_vois
 
     # Optimize for plan objective
-    opti_fluence = optimize_fluence_for_objectives(dij_matrix=dij_matrix,fluence_matrix=uniform_fluence_vector,objectives=TPopt_objectives )
+    opti_fluence, opti_logs = optimize_fluence_for_objectives(dij_matrix=dij_matrix,fluence_matrix=uniform_fluence_vector,objectives=TPopt_objectives )
 
     # Get dose for fluences
     dose = get_dose_from_dijs_and_fluence_vector(dij_matrix, opti_fluence)
 
+    # Plot optimization hisotry
+    plot_opti_history(opti_logs)
+
     # Plot dose on ct
-    plot_dij_matrix_on_ct(dose, plot_note=f'Optimized fluence, Nbeam angles: {nbeams}', voinames_colors_visualization=None)
+    plot_dij_matrix_on_ct(dose, plot_note=f'Optimized fluence, Nbeam angles: {nbeams}', voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')])
 
 
 
