@@ -20,6 +20,7 @@ from scipy import ndimage
 import math
 
 from scipy.ndimage import gaussian_filter1d
+from scipy.optimize import LinearConstraint
 
 from utils.helpers import mat_loader
 
@@ -2013,56 +2014,112 @@ def plot_opti_history(opti_logs):
 
     # #=====================================Week9===============================
 
+
 def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
-                                    objectives: Dict, iterations:int=1000,
-                                    step_size:float=0.0005):
+                                objectives: Dict, max_iterations: int = 1000, ftol=1e-6):
+    print(f'Optimizing dose with scipy SLSQP. Max iterations: {max_iterations}')
 
-    print(f'Optimizing dose with scipy. Chosen iterations: {iterations} with stepsize: {step_size}')
+    # Initialize fluence matrix to zeros
+    initial_fluence = np.zeros_like(fluence_matrix.flatten())
 
+    # Track iteration history
+    iteration_history = []
 
-    # initialize fluence matrix to zeros
-    fluence_matrix[:] = 0
-    all_iterations = {}
-    print_info = (iterations)/3
-
-    scipy.optimize.minimize
-
-    for i in range(iterations):
-        if i % round(print_info)==0 and i != 0:
-            prev_i = i-1
+    # Callback function to track progress
+    def callback(xk):
+        iteration = len(iteration_history)
+        if iteration % (max_iterations // 3) == 0 and iteration != 0:
+            obj_val = combined_objective(xk)
+            grad_val = combined_gradient(xk)
             print("=" * 70)
-            print(f'At iteration {i}/{iterations} in objective optimization.')
-            print(f'Total objective value: {all_iterations[f"{prev_i}"]["combined_obj_val"]}')
-            print(f'Total gradient values: {all_iterations[f"{prev_i}"]["combined_gradient"]}')
-            print(f'Last individual objective values: {all_iterations[f"{prev_i}"]["obj_vals"]}')
-        # Initialize values as empty or zeros
-        obj_values = []
+            print(f'At iteration {iteration}/{max_iterations} in objective optimization.')
+            print(f'Total objective value: {obj_val:.6f}')
+            print(f'Gradient norm: {np.linalg.norm(grad_val):.6f}')
+
+        # Store iteration data
+        iteration_history.append({
+            'iteration': iteration,
+            'fluence': xk.copy(),
+            'objective': combined_objective(xk)
+        })
+
+    # Define combined objective function (sums over all VOIs)
+    def combined_objective(fluence_weights):
+        """Single objective function that sums objectives from all VOIs"""
         total_objective = 0.0
-        total_gradient = np.zeros(len(fluence_matrix))
-
-        # For each voi
         for voi in objectives['vois']:
-            # Get quadratic objective value
-            voi_quadr_objective_value = calculate_quadratic_objective(fluence_matrix, objectives, dij_matrix, voi['name'])
-            # Get beam gradient values
-            voi_quadr_objective_gradient = calculate_quadratic_objective_gradient(fluence_matrix, objectives, dij_matrix, voi['name'])
-            # Collapse into a single objective metric for all vois
-            total_objective += voi_quadr_objective_value
-            # Collapse into a single gradient metric for all vois
-            total_gradient += voi_quadr_objective_gradient.flatten()
-            # Track data
-            voi_objective_params = {'name' :voi['name'], 'obj_value':voi_quadr_objective_value, 'obj_gradient': voi_quadr_objective_gradient}
-            obj_values.append(voi_objective_params)
-        all_iterations[f'{i}'] = {'obj_vals':obj_values,'combined_obj_val':total_objective,'combined_gradient':total_gradient}
+            voi_obj = calculate_quadratic_objective(
+                fluence_weights, objectives, dij_matrix, voi['name']
+            )
+            total_objective += voi_obj
+        return total_objective
 
-        # Update fluence using gradient descent
-        # w_new = w_old - α * gradient of f
-        fluence_matrix = fluence_matrix.flatten() - step_size * total_gradient.flatten()
+    # Define combined gradient function (sums gradients from all VOIs)
+    def combined_gradient(fluence_weights):
+        """Single gradient function that sums gradients from all VOIs"""
+        total_gradient = np.zeros_like(fluence_weights)
+        for voi in objectives['vois']:
+            voi_grad = calculate_quadratic_objective_gradient(
+                fluence_weights, objectives, dij_matrix, voi['name']
+            )
+            total_gradient += voi_grad.flatten()
+        return total_gradient
 
-        # Fluence weights cannot be negative (we cannot suck up dose :))
-        fluence_matrix = np.maximum(0, fluence_matrix)
+    # Define constraints
+    def combined_constraints(fluence_weights):
 
-    return fluence_matrix, all_iterations
+    # Set up bounds: fluence must be non-negative
+    bounds = [(0, None) for _ in range(len(initial_fluence))]
+
+
+    # Run optimization (single call!)
+    print("Starting optimization...")
+    result = scipy.optimize.minimize(
+        fun=combined_objective,  # Function to minimize
+        x0=initial_fluence,  # Initial guess
+        method='SLSQP',  # Method
+        jac=combined_gradient,  # Gradient function
+        bounds=bounds,  # Non-negative constraint
+        callback=callback,  # Track progress
+        options={
+            'maxiter': max_iterations,
+            'disp': True,  # Display convergence messages
+            'ftol': ftol  # Function tolerance value
+        }
+    )
+
+    print("=" * 70)
+    print("Optimization complete!")
+    print(f"Final objective value: {result.fun:.6f}")
+    print(f"Success: {result.success}")
+    print(f"Message: {result.message}")
+    print(f"Iterations: {result.nit}")
+
+    # Get optimized fluence
+    optimized_fluence = result.x.reshape(fluence_matrix.shape)
+
+    # Compile final iteration data with per-VOI breakdown
+    final_iteration_data = {
+        'optimized_fluence': optimized_fluence,
+        'total_objective': result.fun,
+        'gradient_norm': np.linalg.norm(result.jac),
+        'success': result.success,
+        'message': result.message,
+        'iterations': result.nit,
+        'voi_breakdown': []
+    }
+
+    # Calculate final objective value for each VOI
+    # for voi in objectives['vois']:
+    #     voi_obj = calculate_quadratic_objective(
+    #         result.x, objectives, dij_matrix, voi['name']
+    #     )
+    #     final_iteration_data['voi_breakdown'].append({
+    #         'name': voi['name'],
+    #         'objective_value': voi_obj
+    #     })
+
+    return optimized_fluence, final_iteration_data, iteration_history
 
 
 
@@ -2333,13 +2390,13 @@ if __name__ == '__main__':
             TPopt_objectives['vois'][count]['1d_mask'] = dij_format_vois
 
         # Optimize for plan objective
-        opti_fluence, opti_logs = optimize_photons_with_scipy(dij_matrix=dij_matrix,fluence_matrix=uniform_fluence_vector,objectives=TPopt_objectives )
+        optimized_fluence, final_iteration_data, iteration_history = optimize_photons_with_scipy(dij_matrix=dij_matrix,fluence_matrix=uniform_fluence_vector,objectives=TPopt_objectives )
 
         # Get dose for fluences
-        dose = get_dose_from_dijs_and_fluence_vector(dij_matrix, opti_fluence)
+        dose = get_dose_from_dijs_and_fluence_vector(dij_matrix, optimized_fluence)
 
         # Plot optimization hisotry
-        plot_opti_history(opti_logs)
+        # plot_opti_history(opti_logs)
 
         # Plot dose on ct
         plot_dij_matrix_on_ct(dose, plot_note=f'Optimized fluence, Nbeam angles: {nbeams}', voinames_colors_visualization=[('tumor', 'red'),('esophagus','green'),('spinal cord','orange')])
