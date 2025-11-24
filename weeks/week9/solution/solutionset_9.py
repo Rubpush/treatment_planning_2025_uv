@@ -1789,7 +1789,22 @@ def get_vois_dij_format(tplan_obj, dij_matrix) -> Dict[str,np.array]:
 
 
 
-def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
+def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict[List[Dict]]:
+    """
+    returns a dict of 'vois' which is a list of individual dicts of the following format:
+    {
+            "name": "normal tissue",
+            "nVoxels": np.sum(tplan_obj.voi == voinumbers.get('normal tissue')),
+            "maxdose": 20,
+            "overdosepenalty": 7,
+            "mindose": 0,
+            "underdosepenalty": 0,
+            "minconstraint": 10,
+            "maxconstraint": 25,
+    }
+
+    """
+
     TPopt = {"vois": [
         {
             "name": "normal tissue",
@@ -1806,6 +1821,7 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
             "overdosepenalty": 10,
             "mindose": 0,
             "underdosepenalty": 0,
+            # "maxconstraint": 10,
         },
         {
             "name": "left lung",
@@ -1822,6 +1838,7 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
             "overdosepenalty": 40,
             "mindose": 0,
             "underdosepenalty": 0,
+            "maxconstraint":20,
         },
         {
             "name": "esophagus",
@@ -1838,6 +1855,8 @@ def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict:
             "overdosepenalty": 1,
             "mindose": 35,
             "underdosepenalty": 40,
+            "minconstraint": 15,
+            "maxconstraint": 55,
         }
     ]
     }
@@ -1900,10 +1919,9 @@ def calculate_quadratic_objective(bixelweights: np.ndarray, TPopt: Dict, dij_mat
 
     return voi_objective_value
 
-
 def calculate_quadratic_objective_gradient(bixelweights: np.ndarray, TPopt: Dict,
                                            dij_matrix: np.ndarray, voiname: str = ''):
-    """Calculate gradient of f for gradient descent optimization."""
+    """Calculate gradient of f for gradient descent for IMRT optimization."""
 
     # Calculate dose vector: d = A * w
     # where A is the dose matrix and w is the bixel weights
@@ -1941,6 +1959,7 @@ def calculate_quadratic_objective_gradient(bixelweights: np.ndarray, TPopt: Dict
     gradient = 2 * dij_matrix.T @ dose_gradient
 
     return gradient
+
 
 def optimize_fluence_for_objectives(dij_matrix: np.array, fluence_matrix: np.array,
                                     objectives: Dict, method:str = 'simple_gradient_descent', iterations:int=1000,
@@ -2025,24 +2044,6 @@ def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
     # Track iteration history
     iteration_history = []
 
-    # Callback function to track progress
-    def callback(xk):
-        iteration = len(iteration_history)
-        if iteration % (max_iterations // 3) == 0 and iteration != 0:
-            obj_val = combined_objective(xk)
-            grad_val = combined_gradient(xk)
-            print("=" * 70)
-            print(f'At iteration {iteration}/{max_iterations} in objective optimization.')
-            print(f'Total objective value: {obj_val:.6f}')
-            print(f'Gradient norm: {np.linalg.norm(grad_val):.6f}')
-
-        # Store iteration data
-        iteration_history.append({
-            'iteration': iteration,
-            'fluence': xk.copy(),
-            'objective': combined_objective(xk)
-        })
-
     # Define combined objective function (sums over all VOIs)
     def combined_objective(fluence_weights):
         """Single objective function that sums objectives from all VOIs"""
@@ -2065,12 +2066,69 @@ def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
             total_gradient += voi_grad.flatten()
         return total_gradient
 
-    # Define constraints
-    def combined_constraints(fluence_weights):
 
-    # Set up bounds: fluence must be non-negative
+# These constrain the DOSE
+    def create_dose_constraints():
+        """
+        Create hard dose constraints for each VOI.
+        NOTE: These are HARD constraints - dose MUST satisfy them.
+        Not soft constraints achieved through objectives
+
+        To use hard constraints, add these fields to your VOI dicts:
+        - 'maxconstraint': absolute maximum dose allowed (Gy)
+        - 'minconstraint': absolute minimum dose allowed (Gy)
+        """
+        constraints = []
+
+        for voi in objectives['vois']:
+            voi_name = voi['name']
+
+            # Check if this VOI has hard constraint requirements
+            hard_max = voi.get('maxconstraint', None)
+            hard_min = voi.get('minconstraint', None)
+
+            # Skip if no hard constraints specified
+            if hard_max is None and hard_min is None:
+                continue
+
+            # Maximum dose constraint: max_dose - dose[voi_voxels] >= 0
+            if hard_max is not None:
+                def max_dose_constraint_func(fluence_weights, name=voi_name, max_val=hard_max):
+                    dose = dij_matrix @ fluence_weights
+                    voi_dose, _, _, _, _, _, _ = get_voi_variables_and_dose_for_objectives(
+                        dose, objectives, name
+                    )
+                    # Return array: max_val - voi_dose (positive when constraint satisfied)
+                    return max_val - voi_dose
+
+                constraints.append({
+                    'type': 'ineq',
+                    'fun': max_dose_constraint_func
+                })
+                print(f"  Added hard max dose constraint for {voi_name}: {hard_max} Gy")
+
+            # Minimum dose constraint: dose[voi_voxels] - min_dose >= 0
+            if hard_min is not None:
+                def min_dose_constraint_func(fluence_weights, name=voi_name, min_val=hard_min):
+                    dose = dij_matrix @ fluence_weights
+                    voi_dose, _, _, _, _, _, _ = get_voi_variables_and_dose_for_objectives(
+                        dose, objectives, name
+                    )
+                    # Return array: voi_dose - min_val (positive when constraint satisfied)
+                    return voi_dose - min_val
+
+                constraints.append({
+                    'type': 'ineq',
+                    'fun': min_dose_constraint_func
+                })
+                print(f"  Added hard min dose constraint for {voi_name}: {hard_min} Gy")
+
+        return constraints if constraints else None
+    # Bounds: fluence must be non-negative
     bounds = [(0, None) for _ in range(len(initial_fluence))]
 
+    # Create constraints
+    constraints = create_dose_constraints()
 
     # Run optimization (single call!)
     print("Starting optimization...")
@@ -2080,7 +2138,7 @@ def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
         method='SLSQP',  # Method
         jac=combined_gradient,  # Gradient function
         bounds=bounds,  # Non-negative constraint
-        callback=callback,  # Track progress
+        constraints=constraints,  # Dose constraints (if any)
         options={
             'maxiter': max_iterations,
             'disp': True,  # Display convergence messages
@@ -2098,7 +2156,7 @@ def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
     # Get optimized fluence
     optimized_fluence = result.x.reshape(fluence_matrix.shape)
 
-    # Compile final iteration data with per-VOI breakdown
+    # Compile final iteration data
     final_iteration_data = {
         'optimized_fluence': optimized_fluence,
         'total_objective': result.fun,
@@ -2106,22 +2164,8 @@ def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
         'success': result.success,
         'message': result.message,
         'iterations': result.nit,
-        'voi_breakdown': []
     }
-
-    # Calculate final objective value for each VOI
-    # for voi in objectives['vois']:
-    #     voi_obj = calculate_quadratic_objective(
-    #         result.x, objectives, dij_matrix, voi['name']
-    #     )
-    #     final_iteration_data['voi_breakdown'].append({
-    #         'name': voi['name'],
-    #         'objective_value': voi_obj
-    #     })
-
     return optimized_fluence, final_iteration_data, iteration_history
-
-
 
 if __name__ == '__main__':
     # #=====================================Week1===============================
@@ -2371,7 +2415,7 @@ if __name__ == '__main__':
         TPopt_objectives = define_plan_objectives(tplan_obj, voinumbers)
 
     # # Get a list of equispaced beam angles, use an uneven number to avoid symmetry
-        nbeams = 7
+        nbeams = 9
         angles = get_equispaced_full_rot_angles(nbeams)
         # Use the angles to get the beams with beamlets and beamlet positions (lateral offsets)
         beams = create_beams(angles)
