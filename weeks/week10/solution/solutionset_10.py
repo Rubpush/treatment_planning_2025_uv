@@ -1789,7 +1789,7 @@ def get_vois_dij_format(tplan_obj, dij_matrix) -> Dict[str,np.array]:
 
 
 
-def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict[List[Dict]]:
+def define_plan_objectives(tplan_obj: TPlan, voinumbers: Dict[str,int])-> Dict[str, List[Dict]]:
     """
     returns a dict of 'vois' which is a list of individual dicts of the following format:
     {
@@ -2167,8 +2167,8 @@ def optimize_photons_with_scipy(dij_matrix: np.array, fluence_matrix: np.array,
     }
     return optimized_fluence, final_iteration_data, iteration_history
 
-def create_proton_beams(angles: List [float],tp_plan_path:str = str(),
-                        protondose_path: str = str(), show_beams = False):
+def create_proton_beams(angles: List [float],tp_plan_path: Path = str(project_root_provider()) + r'.\utils\data\patientdata.mat',
+                        protondose_path:Path = str(project_root_provider()) + r'.\utils\data\protondosedata', show_beams = False):
     # prepare beams container
     beams = {}
     beamlet_positions = [-12, -10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10, 12]
@@ -2180,10 +2180,15 @@ def create_proton_beams(angles: List [float],tp_plan_path:str = str(),
 
     # Get proton beam data
     # Construct path to proton beam dose file based on init energy
-    protondosesfile_path = Path(protondosesfolder_path) / Path(f'pbmcs{str(float(initial_energy))}.dat')
+    # protondosesfile_path = Path(protondosesfolder_path) / Path(f'pbmcs{str(float(initial_energy))}.dat')
+    protondosesavailenergies_path = Path(protondose_path) / Path(f'edata.dat')
+    protondosesenergiesinfo_path = Path(protondose_path) / Path(f'rdata.dat')
+
+    proton_energies_list = numpy.loadtxt(protondosesavailenergies_path)
+    proton_energies_info_list = numpy.loadtxt(protondosesenergiesinfo_path)
 
     # Parse proton dose data
-    protondose_data = get_proton_dose_data(protondosesfile_path=protondosesfile_path)
+    # protondose_data = get_proton_dose_data(protondosesfile_path=protondosesfile_path)
 
     # Get isocenter
     isocenter = get_isocenter(tp_plan_obj=tp_plan_obj, isocenter_method='com_tumor')
@@ -2202,20 +2207,20 @@ def create_proton_beams(angles: List [float],tp_plan_path:str = str(),
 
         # for each beamletpos, check if tumor is in path.
         # if tumor is in path get max and min raddepth within tumor mask on the latpos path
-        energies_per_latpos = get_energies_beamletpos()
+        # energies_per_latpos = get_energies_beamletpos()
 
-        for latpos in energies_per_latpos:
-            for energy in latpos:
-                # Compute dose distribution using pencil beam algorithm
-                pb_result = calculate_proton_pencil_beam_dose(
-                    angle=angle,
-                    init_energy=initial_energy,
-                    latpos=latpos,
-                    raddepth=raddepth_ct,
-                    tp_plan_obj=tp_plan_obj,
-                    protondose_data=protondose_data
-                )
-        beams[f'{beamNo}'] = {'angle': angle, 'nBeamlets': len(beamlet_positions), 'beamletpos': beamlet_positions, 'raddepth': raddepth, 'pb': pb}
+        # for latpos in energies_per_latpos:
+        #     for energy in latpos:
+        #         # Compute dose distribution using pencil beam algorithm
+        #         pb_result = calculate_proton_pencil_beam_dose(
+        #             angle=angle,
+        #             init_energy=initial_energy,
+        #             latpos=latpos,
+        #             raddepth=raddepth_ct,
+        #             tp_plan_obj=tp_plan_obj,
+        #             protondose_data=protondose_data
+        #         )
+        # beams[f'{beamNo}'] = {'angle': angle, 'nBeamlets': len(beamlet_positions), 'beamletpos': beamlet_positions, 'raddepth': raddepth, 'pb': pb}
 
     return beams
 
